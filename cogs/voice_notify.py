@@ -2,17 +2,28 @@
 
 from __future__ import annotations
 
+import logging
+
 import discord
 from discord.ext import commands
 
 from config import settings
 
+log = logging.getLogger(__name__)
+
 
 class VoiceNotify(commands.Cog):
     """Signals when a voice channel goes from empty to occupied."""
 
-    def __init__(self, bot: commands.Bot) -> None:
+    def __init__(
+        self,
+        bot: commands.Bot,
+        channel_id: int | None = None,
+    ) -> None:
         self.bot = bot
+        self.channel_id = (
+            settings.voice_notify_channel_id if channel_id is None else channel_id
+        )
         self.active_channels: set[int] = set()
 
     @commands.Cog.listener()
@@ -24,27 +35,33 @@ class VoiceNotify(commands.Cog):
     ) -> None:
         if after.channel is not None and before.channel is None:
             channel = after.channel
+            log.debug(
+                "%s joined %s (%s members)",
+                member,
+                channel,
+                len(channel.members),
+            )
             if len(channel.members) == 1 and channel.id not in self.active_channels:
                 self.active_channels.add(channel.id)
                 await self._announce_channel_start(member, channel)
         elif before.channel is not None and after.channel is None:
+            log.debug("%s left %s", member, before.channel)
             if len(before.channel.members) == 0:
                 self.active_channels.discard(before.channel.id)
+                log.debug("Voice channel %s is empty again", before.channel.id)
 
     async def _announce_channel_start(
         self,
         member: discord.Member,
         channel: discord.VoiceChannel | discord.StageChannel,
     ) -> None:
-        if settings.voice_notify_channel_id is None:
-            print("VOICE_NOTIFY_CHANNEL_ID is not set; skipping voice announcement.")
+        if self.channel_id is None:
+            log.warning("VOICE_NOTIFY_CHANNEL_ID is not set; skipping announcement.")
             return
 
-        notification_channel = self.bot.get_channel(settings.voice_notify_channel_id)
+        notification_channel = self.bot.get_channel(self.channel_id)
         if notification_channel is None:
-            print(
-                f"Voice notify channel {settings.voice_notify_channel_id} was not found."
-            )
+            log.warning("Voice notify channel %s was not found.", self.channel_id)
             return
 
         embed = discord.Embed(
@@ -62,6 +79,7 @@ class VoiceNotify(commands.Cog):
             content="@everyone Someone started the voice channel",
             embed=embed,
         )
+        log.info("Announced voice start in %s by %s", channel, member)
 
 
 async def setup(bot: commands.Bot) -> None:

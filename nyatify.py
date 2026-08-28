@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import logging
 
 import discord
 from discord.ext import commands
 
 from config import settings
+from loader import selected_extensions
 
-COGS_DIR = Path(__file__).resolve().parent / "cogs"
+log = logging.getLogger("nyatify")
 
 
 class Nyatify(commands.Bot):
@@ -21,24 +22,35 @@ class Nyatify(commands.Bot):
         super().__init__(command_prefix=settings.command_prefix, intents=intents)
 
     async def setup_hook(self) -> None:
-        for path in sorted(COGS_DIR.glob("*.py")):
-            if path.name.startswith("_"):
-                continue
-            extension = f"cogs.{path.stem}"
+        for extension in selected_extensions(settings.enabled_cogs):
             try:
                 await self.load_extension(extension)
-                print(f"Loaded {extension}")
-            except Exception as exc:
-                print(f"Skipped {extension}: {exc}")
+                log.info("Loaded %s", extension)
+            except Exception:
+                log.exception("Skipped %s", extension)
 
     async def on_ready(self) -> None:
-        print(f"Logged in as {self.user} ({self.user.id if self.user else '?'})")
-        print(f"Loaded functions: {', '.join(sorted(self.extensions)) or 'none'}")
+        log.info(
+            "Logged in as %s (%s)",
+            self.user,
+            self.user.id if self.user else "?",
+        )
+        loaded = ", ".join(sorted(self.extensions)) or "none"
+        log.info("Loaded functions: %s", loaded)
+
+
+def configure_logging() -> None:
+    logging.basicConfig(
+        level=getattr(logging, settings.log_level, logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
 
 def main() -> None:
+    configure_logging()
     bot = Nyatify()
-    bot.run(settings.require_token())
+    bot.run(settings.require_token(), log_handler=None)
 
 
 if __name__ == "__main__":

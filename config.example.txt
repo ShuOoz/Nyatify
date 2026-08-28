@@ -1,4 +1,7 @@
 DISCORD_TOKEN=your_bot_token_here
 COMMAND_PREFIX=!
 VOICE_NOTIFY_CHANNEL_ID=1480790303874224198
+LOG_LEVEL=INFO
+# Leave empty to load every function. Set to one name to isolate, e.g. voice_notify
+ENABLED_COGS=
 

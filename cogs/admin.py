@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import discord
@@ -9,6 +10,7 @@ from discord.ext import commands
 
 
 COGS_PACKAGE = "cogs"
+log = logging.getLogger(__name__)
 
 
 def _extension_name(name: str) -> str:
@@ -49,6 +51,7 @@ class Admin(commands.Cog):
     async def load_cog(self, ctx: commands.Context, name: str) -> None:
         extension = _extension_name(name)
         await self.bot.load_extension(extension)
+        log.info("Loaded %s", extension)
         await ctx.send(f"Loaded `{extension}`.")
 
     @commands.command(name="unload")
@@ -59,6 +62,7 @@ class Admin(commands.Cog):
             await ctx.send("The admin function cannot be unloaded.")
             return
         await self.bot.unload_extension(extension)
+        log.info("Unloaded %s", extension)
         await ctx.send(f"Unloaded `{extension}`.")
 
     @commands.command(name="reload")
@@ -66,6 +70,7 @@ class Admin(commands.Cog):
     async def reload_cog(self, ctx: commands.Context, name: str) -> None:
         extension = _extension_name(name)
         await self.bot.reload_extension(extension)
+        log.info("Reloaded %s", extension)
         await ctx.send(f"Reloaded `{extension}`.")
 
     async def cog_command_error(
@@ -88,7 +93,7 @@ class Admin(commands.Cog):
             return
         if isinstance(error, commands.ExtensionFailed):
             await ctx.send(f"`{error.name}` failed to load. Check the logs.")
-            print(f"Extension failed: {error.name}\n{error.original}")
+            log.exception("Extension failed: %s", error.name, exc_info=error.original)
             return
         raise error
 

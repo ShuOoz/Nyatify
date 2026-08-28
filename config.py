@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -23,22 +24,29 @@ def _parse_config_file(path: Path) -> dict[str, str]:
     return values
 
 
+def _first(environ: Mapping[str, str], file_values: dict[str, str], key: str) -> str | None:
+    return environ.get(key) or file_values.get(key)
+
+
 class Settings:
-    def __init__(self) -> None:
-        file_values = _parse_config_file(CONFIG_PATH)
+    def __init__(
+        self,
+        environ: Mapping[str, str] | None = None,
+        config_path: Path | None = None,
+    ) -> None:
+        environ = os.environ if environ is None else environ
+        file_values = _parse_config_file(config_path or CONFIG_PATH)
 
-        self.token = os.getenv("DISCORD_TOKEN") or file_values.get("DISCORD_TOKEN")
-        self.command_prefix = (
-            os.getenv("COMMAND_PREFIX")
-            or file_values.get("COMMAND_PREFIX")
-            or "!"
-        )
+        self.token = _first(environ, file_values, "DISCORD_TOKEN")
+        self.command_prefix = _first(environ, file_values, "COMMAND_PREFIX") or "!"
+        self.log_level = (_first(environ, file_values, "LOG_LEVEL") or "INFO").upper()
 
-        notify_raw = (
-            os.getenv("VOICE_NOTIFY_CHANNEL_ID")
-            or file_values.get("VOICE_NOTIFY_CHANNEL_ID")
-        )
+        notify_raw = _first(environ, file_values, "VOICE_NOTIFY_CHANNEL_ID")
         self.voice_notify_channel_id = int(notify_raw) if notify_raw else None
+
+        enabled_raw = _first(environ, file_values, "ENABLED_COGS") or ""
+        enabled = [part.strip() for part in enabled_raw.split(",") if part.strip()]
+        self.enabled_cogs: list[str] | None = enabled or None
 
     def require_token(self) -> str:
         if not self.token:
