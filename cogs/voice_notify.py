@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 from collections.abc import Callable
@@ -18,9 +19,11 @@ from announce import (
     TemporaryNotice,
     send_announcement,
 )
+from config import write_text_atomic
 from guild_config import (
     GuildConfig,
     guild_config as default_guild_config,
+    parse_snowflake,
 )
 
 log = logging.getLogger(__name__)
@@ -102,10 +105,17 @@ class VoiceNotify(NotifyCog):
         self._gif_bag: list[str] = []
         self._last_gif: str | None = None
 
+    async def cog_unload(self) -> None:
+        self._save_sessions()
+        await super().cog_unload()
+
     async def _on_notify_ready(self) -> None:
+        if not self._announced and not self._emptied_at:
+            self._load_sessions()
         present = self._sync_active_channels()
         await super()._on_notify_ready()
         await self._reconcile_voice_notices(present)
+        self._save_sessions()
 
     def _sync_active_channels(self) -> _Presence:
         """Refresh sessions from occupancy. Return who is in a non-AFK voice room."""
@@ -180,6 +190,68 @@ class VoiceNotify(NotifyCog):
             key for key in self._announced if key[0] != guild.id
         }
 
+    def _sessions_path(self) -> Path | None:
+        path = self.notices.path
+        if path is None:
+            return None
+        return path.with_name("voice_sessions.json")
+
+    def _load_sessions(self) -> None:
+        path = self._sessions_path()
+        if path is None or not path.exists():
+            return
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            log.exception("Could not read %s; starting with empty voice sessions.", path)
+            return
+        if not isinstance(raw, dict):
+            return
+        announced = raw.get("announced")
+        if isinstance(announced, list):
+            restored: set[tuple[int, int]] = set()
+            for item in announced:
+                if not isinstance(item, (list, tuple)) or len(item) != 2:
+                    continue
+                guild_id = parse_snowflake(item[0])
+                member_id = parse_snowflake(item[1])
+                if guild_id is not None and member_id is not None:
+                    restored.add((guild_id, member_id))
+            self._announced = restored
+        emptied = raw.get("emptied_at")
+        if isinstance(emptied, list):
+            restored_empty: dict[int, float] = {}
+            for item in emptied:
+                if not isinstance(item, (list, tuple)) or len(item) != 2:
+                    continue
+                channel_id = parse_snowflake(item[0])
+                try:
+                    emptied_at = float(item[1])
+                except (TypeError, ValueError):
+                    continue
+                if channel_id is not None:
+                    restored_empty[channel_id] = emptied_at
+            self._emptied_at = restored_empty
+
+    def _save_sessions(self) -> None:
+        path = self._sessions_path()
+        if path is None:
+            return
+        payload = {
+            "announced": sorted([guild_id, member_id] for guild_id, member_id in self._announced),
+            "emptied_at": sorted(
+                [channel_id, emptied_at]
+                for channel_id, emptied_at in self._emptied_at.items()
+            ),
+        }
+        try:
+            write_text_atomic(
+                path,
+                json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            )
+        except OSError:
+            log.exception("Could not save voice sessions to %s", path)
+
     def _forget_notice(self, guild_id: int, member_id: int) -> None:
         self.notices.forget(FEATURE_VOICE, guild_id, str(member_id))
 
@@ -249,31 +321,33 @@ class VoiceNotify(NotifyCog):
         after_id = None if after_channel is None else after_channel.id
         if before_id == after_id:
             return
-
-        self._expire_grace()
-        if before_channel is not None:
-            self._on_leave_channel(member, before_channel)
-        if after_channel is None or _is_afk_channel(after_channel):
-            await self._vanish_member_notice(
-                member, (before_channel or after_channel).guild
-            )
-            return
-        await self._on_join_channel(member, after_channel)
+        try:
+            self._expire_grace()
+            if before_channel is not None:
+                self._on_leave_channel(member, before_channel)
+            if after_channel is None or _is_afk_channel(after_channel):
+                await self._vanish_member_notice(
+                    member, (before_channel or after_channel).guild
+                )
+                return
+            await self._on_join_channel(member, after_channel)
+        finally:
+            self._save_sessions()
 
     @commands.Cog.listener()
     async def on_guild_remove(self, guild: discord.Guild) -> None:
         self._drop_guild(guild)
+        self._save_sessions()
         await super().on_guild_remove(guild)
 
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel) -> None:
         if isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
             self._drop_channel(channel.id)
+            self._save_sessions()
         await super().on_guild_channel_delete(channel)
 
     def _pick_gif(self) -> str:
-        if not VOICE_NOTICE_GIF_URLS:
-            raise ValueError("VOICE_NOTICE_GIF_URLS is empty")
         if not self._gif_bag:
             self._gif_bag = list(VOICE_NOTICE_GIF_URLS)
             random.shuffle(self._gif_bag)

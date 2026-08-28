@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
 from typing import Any
 
@@ -88,6 +89,15 @@ def _unknown_announce_feature(name: str) -> str:
         listed = ", ".join(f"`{feature}`" for feature in known)
         message += f" Known: {listed}."
     return message
+
+
+def _missing_intent_names(bot: commands.Bot, extension: str) -> tuple[str, ...]:
+    intents = getattr(bot, "intents", None)
+    missing: list[str] = []
+    for name in getattr(importlib.import_module(extension), "REQUIRED_INTENTS", ()):
+        if not getattr(intents, name, False):
+            missing.append(name)
+    return tuple(missing)
 
 
 def _channel_id_from_arg(argument: str) -> int | None:
@@ -412,7 +422,17 @@ class Admin(commands.Cog):
             return
         await self.bot.load_extension(extension)
         log.info("Loaded %s", extension)
-        await _respond(ctx, f"Loaded `{public_cog_name(extension)}`.")
+        public = public_cog_name(extension)
+        missing = _missing_intent_names(self.bot, extension)
+        if missing:
+            listed = ", ".join(f"`{name}`" for name in missing)
+            await _respond(
+                ctx,
+                f"Loaded `{public}`, but this process is missing the {listed} "
+                "intent. Restart the bot with that cog enabled to receive its events.",
+            )
+            return
+        await _respond(ctx, f"Loaded `{public}`.")
 
     @commands.hybrid_command(name="unload", description="Unload a cog without restarting")
     @commands.is_owner()
@@ -439,7 +459,17 @@ class Admin(commands.Cog):
             return
         await self.bot.reload_extension(extension)
         log.info("Reloaded %s", extension)
-        await _respond(ctx, f"Reloaded `{public_cog_name(extension)}`.")
+        public = public_cog_name(extension)
+        missing = _missing_intent_names(self.bot, extension)
+        if missing:
+            listed = ", ".join(f"`{name}`" for name in missing)
+            await _respond(
+                ctx,
+                f"Reloaded `{public}`, but this process is missing the {listed} "
+                "intent. Restart the bot with that cog enabled to receive its events.",
+            )
+            return
+        await _respond(ctx, f"Reloaded `{public}`.")
 
     async def cog_command_error(
         self, ctx: commands.Context, error: commands.CommandError

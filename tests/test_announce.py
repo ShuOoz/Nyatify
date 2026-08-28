@@ -40,7 +40,6 @@ async def _cancel_pending_deletes():
     _pending_deletes.clear()
 
 
-@pytest.mark.asyncio
 async def test_any_function_uses_the_default_channel(tmp_path):
     guild = fake_guild(1)
     channel = fake_text_channel(99, guild=guild)
@@ -60,7 +59,6 @@ async def test_any_function_uses_the_default_channel(tmp_path):
     assert channel.send.await_args.kwargs["content"] == "game news"
 
 
-@pytest.mark.asyncio
 async def test_missing_channel_hints_once_for_any_function(tmp_path):
     guild = fake_guild(1)
     hint = fake_text_channel(3, guild=guild)
@@ -77,7 +75,6 @@ async def test_missing_channel_hints_once_for_any_function(tmp_path):
     assert hint.send.await_args.kwargs["delete_after"] == HINT_TTL_SECONDS
 
 
-@pytest.mark.asyncio
 async def test_deleted_function_channel_falls_back_to_default(tmp_path):
     guild = fake_guild(1)
     default = fake_text_channel(11, guild=guild)
@@ -97,7 +94,6 @@ async def test_deleted_function_channel_falls_back_to_default(tmp_path):
     assert default.send.await_args_list[1].kwargs["content"] == "news ping"
 
 
-@pytest.mark.asyncio
 async def test_send_retries_default_when_function_channel_returns_not_found(tmp_path):
     guild = fake_guild(1)
     default = fake_text_channel(11, guild=guild)
@@ -121,7 +117,6 @@ async def test_send_retries_default_when_function_channel_returns_not_found(tmp_
     assert default.send.await_args_list[1].kwargs["content"] == "news ping"
 
 
-@pytest.mark.asyncio
 async def test_uncached_function_channel_is_fetched_and_kept(tmp_path):
     guild = fake_guild(1)
     default = fake_text_channel(11, guild=guild)
@@ -140,7 +135,6 @@ async def test_uncached_function_channel_is_fetched_and_kept(tmp_path):
     default.send.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_forbidden_send_does_not_clear_the_function_channel(tmp_path):
     guild = fake_guild(1)
     default = fake_text_channel(11, guild=guild)
@@ -164,7 +158,6 @@ async def test_forbidden_send_does_not_clear_the_function_channel(tmp_path):
     default.send.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_fetch_error_does_not_clear_or_fall_back(tmp_path):
     guild = fake_guild(1)
     default = fake_text_channel(11, guild=guild)
@@ -197,7 +190,6 @@ def _store_and_channel(tmp_path, guild_id: int = 1):
     return guild, channel, store
 
 
-@pytest.mark.asyncio
 async def test_any_function_can_self_delete_after_ttl(tmp_path):
     clock = FakeClock()
     guild, channel, store = _store_and_channel(tmp_path)
@@ -246,7 +238,6 @@ def _split_channel_posts(channel):
     return ping, card
 
 
-@pytest.mark.asyncio
 async def test_content_plus_embed_deletes_ping_and_card_after_ttl(tmp_path):
     clock = FakeClock()
     guild, channel, store = _store_and_channel(tmp_path)
@@ -287,7 +278,6 @@ async def test_content_plus_embed_deletes_ping_and_card_after_ttl(tmp_path):
     assert notices.get(OTHER_FEATURE, guild.id, "patch-1") is None
 
 
-@pytest.mark.asyncio
 async def test_failed_card_send_deletes_the_ping(tmp_path):
     guild, channel, store = _store_and_channel(tmp_path)
     ping = MagicMock()
@@ -312,7 +302,6 @@ async def test_failed_card_send_deletes_the_ping(tmp_path):
     ping.delete.assert_awaited_once()
 
 
-@pytest.mark.asyncio
 async def test_delete_expired_continues_after_a_delete_error(tmp_path):
     clock = FakeClock()
     channel = fake_text_channel(99)
@@ -341,7 +330,6 @@ async def test_delete_expired_continues_after_a_delete_error(tmp_path):
     assert notices.get(NEWS, 1, "b") is None
 
 
-@pytest.mark.asyncio
 async def test_two_functions_track_notices_separately(tmp_path):
     clock = FakeClock()
     guild, channel, store = _store_and_channel(tmp_path)
@@ -376,7 +364,6 @@ async def test_two_functions_track_notices_separately(tmp_path):
     assert channel.send.await_count == 2
 
 
-@pytest.mark.asyncio
 async def test_self_delete_survives_restart(tmp_path):
     clock = FakeClock()
     guild, channel, store = _store_and_channel(tmp_path)
@@ -405,7 +392,6 @@ async def test_self_delete_survives_restart(tmp_path):
     assert json.loads(path.read_text()) == {"notices": []}
 
 
-@pytest.mark.asyncio
 async def test_forget_channel_drops_notices_from_that_channel(tmp_path):
     clock = FakeClock()
     guild, channel, store = _store_and_channel(tmp_path)
@@ -431,7 +417,6 @@ async def test_forget_channel_drops_notices_from_that_channel(tmp_path):
     assert json.loads((tmp_path / "notices.json").read_text()) == {"notices": []}
 
 
-@pytest.mark.asyncio
 async def test_delete_now_drops_that_notice(tmp_path):
     clock = FakeClock()
     channel = fake_text_channel(99)
@@ -466,7 +451,6 @@ def test_notices_for_reuses_one_store_per_bot(tmp_path):
     assert first is second
 
 
-@pytest.mark.asyncio
 async def test_purge_loop_start_is_shared(tmp_path):
     notices = TemporaryNotices(fake_bot(), path=tmp_path / "n.json")
     notices.start()
@@ -504,7 +488,6 @@ class _SampleNotify(NotifyCog):
     feature_aliases = ("sample_alias",)
 
 
-@pytest.mark.asyncio
 async def test_notify_cog_registers_feature_only_while_loaded(tmp_path):
     cog = _SampleNotify(fake_bot(), notices_path=tmp_path / "n.json")
     await cog.cog_load()
@@ -515,7 +498,6 @@ async def test_notify_cog_registers_feature_only_while_loaded(tmp_path):
     assert canonical_announce_feature("sample_alias") is None
 
 
-@pytest.mark.asyncio
 async def test_notify_cog_forgets_notices_when_guild_leaves(tmp_path):
     bot = fake_bot()
     cog = NotifyCog(bot, notices_path=tmp_path / "n.json")
@@ -527,7 +509,6 @@ async def test_notify_cog_forgets_notices_when_guild_leaves(tmp_path):
     assert cog.notices.live(NEWS, 1, "item") is None
 
 
-@pytest.mark.asyncio
 async def test_notify_cog_forgets_notices_when_channel_is_deleted(tmp_path):
     bot = fake_bot()
     cog = NotifyCog(bot, notices_path=tmp_path / "n.json")
@@ -539,7 +520,6 @@ async def test_notify_cog_forgets_notices_when_channel_is_deleted(tmp_path):
     assert cog.notices.live(NEWS, 1, "item") is None
 
 
-@pytest.mark.asyncio
 async def test_notify_cog_ready_drops_missing_channels(tmp_path):
     bot = fake_bot()
     bot.guilds = []

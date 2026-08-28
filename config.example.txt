@@ -3,6 +3,6 @@ COMMAND_PREFIX=!
 LOG_LEVEL=INFO
 # Leave empty to load every cog. Set to one name to isolate, e.g. voice
 ENABLED_COGS=
-# Server ID so /commands show up immediately. Leave empty to sync globally (can take up to an hour).
+# Server ID for instant /commands in that server only. Empty syncs globally (can take up to an hour).
 SYNC_GUILD_ID=
 

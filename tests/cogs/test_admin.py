@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import discord
 import pytest
 from discord.ext import commands
 
@@ -40,14 +41,12 @@ def cog(store):
     return Admin(fake_bot(), guild_config=store)
 
 
-@pytest.mark.asyncio
 async def test_ping_replies_and_vanishes_after_10_seconds(cog):
     ctx = fake_context()
     await cog.ping.callback(cog, ctx)
     ctx.send.assert_awaited_once_with("pong", delete_after=COMMAND_REPLY_SECONDS)
 
 
-@pytest.mark.asyncio
 async def test_list_cogs_shows_loaded_and_available(cog):
     ctx = fake_context()
     await cog.list_cogs.callback(cog, ctx)
@@ -55,7 +54,6 @@ async def test_list_cogs_shows_loaded_and_available(cog):
     assert embed.title == "Cogs"
 
 
-@pytest.mark.asyncio
 async def test_load_uses_cogs_package_prefix(cog):
     ctx = fake_context()
     await cog.load_cog.callback(cog, ctx, "voice")
@@ -65,7 +63,17 @@ async def test_load_uses_cogs_package_prefix(cog):
     assert "voice" in ctx.send.await_args.args[0]
 
 
-@pytest.mark.asyncio
+async def test_load_warns_when_required_intents_are_missing(cog):
+    ctx = fake_context()
+    cog.bot.intents = discord.Intents.none()
+    await cog.load_cog.callback(cog, ctx, "voice")
+    cog.bot.load_extension.assert_awaited_once_with("cogs.voice_notify")
+    message = ctx.send.await_args.args[0]
+    assert "Loaded" in message
+    assert "voice_states" in message
+    assert "Restart" in message
+
+
 async def test_admin_cannot_be_unloaded(cog):
     ctx = fake_context()
     await cog.unload_cog.callback(cog, ctx, "admin")
@@ -74,7 +82,6 @@ async def test_admin_cannot_be_unloaded(cog):
     assert "cannot be unloaded" in ctx.send.await_args.args[0]
 
 
-@pytest.mark.asyncio
 async def test_not_owner_gets_a_clear_message(cog):
     ctx = fake_context()
     await cog.cog_command_error(ctx, commands.NotOwner())
@@ -82,7 +89,6 @@ async def test_not_owner_gets_a_clear_message(cog):
     assert ctx.send.await_args.args[0] == "Only the bot owner can manage cogs."
 
 
-@pytest.mark.asyncio
 async def test_announce_channel_sets_all_functions(cog, store):
     guild = fake_guild(7)
     channel = fake_text_channel(55, guild=guild)
@@ -96,7 +102,6 @@ async def test_announce_channel_sets_all_functions(cog, store):
     assert channel.mention in ctx.send.await_args.args[0]
 
 
-@pytest.mark.asyncio
 async def test_announce_rejects_a_voice_channel(cog, store):
     guild = fake_guild(7)
     voice = fake_voice_channel(channel_id=55, guild=guild)
@@ -110,7 +115,6 @@ async def test_announce_rejects_a_voice_channel(cog, store):
     assert "not found" in ctx.send.await_args.args[0]
 
 
-@pytest.mark.asyncio
 async def test_announce_function_sets_only_that_function(cog, store):
     guild = fake_guild(7)
     default = fake_text_channel(10, guild=guild)
@@ -131,7 +135,6 @@ async def test_announce_function_sets_only_that_function(cog, store):
     assert override.mention in ctx.send.await_args.args[0]
 
 
-@pytest.mark.asyncio
 async def test_slash_announce_feature_sets_only_that_function(cog, store):
     guild = fake_guild(7)
     default = fake_text_channel(10, guild=guild)
@@ -147,7 +150,6 @@ async def test_slash_announce_feature_sets_only_that_function(cog, store):
     assert override.mention in ctx.send.await_args.args[0]
 
 
-@pytest.mark.asyncio
 async def test_announce_show(cog, store):
     guild = fake_guild(7)
     channel = fake_text_channel(55, guild=guild)
@@ -163,7 +165,6 @@ async def test_announce_show(cog, store):
     assert fields[NEWS] == "using default"
 
 
-@pytest.mark.asyncio
 async def test_missing_permissions_gets_a_clear_message(cog):
     ctx = fake_context()
     await cog.cog_command_error(ctx, commands.MissingPermissions(["manage_guild"]))
@@ -174,7 +175,6 @@ async def test_missing_permissions_gets_a_clear_message(cog):
     )
 
 
-@pytest.mark.asyncio
 async def test_leaving_a_guild_drops_stored_settings(cog, store):
     store.set_announce_channel_id(7, 55)
     guild = fake_guild(7)
@@ -182,7 +182,6 @@ async def test_leaving_a_guild_drops_stored_settings(cog, store):
     assert store.get_announce_channel_id(7) is None
 
 
-@pytest.mark.asyncio
 async def test_slash_announce_feature_without_function_sets_all(cog, store):
     guild = fake_guild(7)
     channel = fake_text_channel(55, guild=guild)
@@ -195,7 +194,6 @@ async def test_slash_announce_feature_without_function_sets_all(cog, store):
     assert channel.mention in ctx.send.await_args.args[0]
 
 
-@pytest.mark.asyncio
 async def test_slash_announce_show_when_empty(cog):
     guild = fake_guild(7)
     ctx = fake_context(guild)
@@ -211,7 +209,6 @@ async def test_slash_announce_show_when_empty(cog):
     assert ctx.send.await_args.kwargs["delete_after"] == ANNOUNCE_SHOW_SECONDS
 
 
-@pytest.mark.asyncio
 async def test_announce_show_lists_a_function_override(cog, store):
     guild = fake_guild(7)
     default = fake_text_channel(10, guild=guild)
@@ -233,7 +230,6 @@ async def test_announce_show_lists_a_function_override(cog, store):
     assert fields[NEWS] == override.mention
 
 
-@pytest.mark.asyncio
 async def test_announce_function_to_default_clears_the_override(cog, store):
     guild = fake_guild(7)
     default = fake_text_channel(10, guild=guild)
@@ -250,7 +246,6 @@ async def test_announce_function_to_default_clears_the_override(cog, store):
     assert "default" in ctx.send.await_args.args[0]
 
 
-@pytest.mark.asyncio
 async def test_deleted_function_channel_is_assigned_back_to_default(cog, store):
     guild = fake_guild(7)
     default = fake_text_channel(10, guild=guild)
@@ -271,7 +266,6 @@ async def test_deleted_function_channel_is_assigned_back_to_default(cog, store):
     assert default.send.await_args.kwargs["delete_after"] == HINT_TTL_SECONDS
 
 
-@pytest.mark.asyncio
 async def test_reload_uses_cogs_package_prefix(cog):
     ctx = fake_context()
     await cog.reload_cog.callback(cog, ctx, "voice")
@@ -282,7 +276,6 @@ async def test_reload_uses_cogs_package_prefix(cog):
     assert "voice" in ctx.send.await_args.args[0]
 
 
-@pytest.mark.asyncio
 async def test_reload_announce_explains_it_is_not_a_cog(cog):
     ctx = fake_context()
     await cog.reload_cog.callback(cog, ctx, "announce")
@@ -291,7 +284,6 @@ async def test_reload_announce_explains_it_is_not_a_cog(cog):
     assert "Restart" in ctx.send.await_args.args[0]
 
 
-@pytest.mark.asyncio
 async def test_reload_without_a_name_shows_reload_usage(cog):
     ctx = fake_context()
     ctx.command = cog.reload_cog

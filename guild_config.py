@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -171,24 +170,12 @@ class GuildConfig:
         Feature overrides are cleared so those functions use the default again.
         Returns whether the default was cleared, and which functions were reset.
         """
-        return self.forget_gone_announce_channels(
-            guild_id,
-            channel_exists=lambda stored_id: stored_id != channel_id,
-        )
-
-    def forget_gone_announce_channels(
-        self,
-        guild_id: int,
-        *,
-        channel_exists: Callable[[int], bool],
-    ) -> tuple[bool, tuple[str, ...]]:
-        """Drop stored ids whose channels no longer exist."""
         snapshot = self._guild_entry(guild_id)
         if not snapshot:
             return False, ()
 
         default_id = parse_snowflake(snapshot.get("announce_channel_id"))
-        default_cleared = default_id is not None and not channel_exists(default_id)
+        default_cleared = default_id == channel_id
 
         dropped: list[str] = []
         features_snap = snapshot.get("features")
@@ -196,10 +183,9 @@ class GuildConfig:
             for name, stored in features_snap.items():
                 canon = canonical_announce_feature(str(name))
                 stored_id = parse_snowflake(stored)
-                if canon is None or stored_id is None:
+                if canon is None or stored_id != channel_id or canon in dropped:
                     continue
-                if not channel_exists(stored_id) and canon not in dropped:
-                    dropped.append(canon)
+                dropped.append(canon)
 
         if not default_cleared and not dropped:
             return False, ()

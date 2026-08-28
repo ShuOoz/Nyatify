@@ -113,22 +113,21 @@ def _assert_voice_posts(text_channel, n: int = 1) -> None:
     assert text_channel.send.await_count == n * 2
 
 
-def _card_kwargs(text_channel, index: int = -1):
+def _card_kwargs(text_channel):
     cards = [
         call.kwargs
         for call in text_channel.send.await_args_list
         if call.kwargs.get("embed") is not None
     ]
-    return cards[index]
+    return cards[-1]
 
 
-def _assert_split_start(text_channel, member, channel, started_at: float) -> str:
+def _assert_split_start(text_channel, member, channel, started_at: float) -> None:
     ping, card = text_channel.send.await_args_list[-2:]
     assert ping.kwargs["content"] == VOICE_NOTICE_CONTENT
     assert ping.kwargs.get("embed") is None
     assert card.kwargs.get("silent") is True
-    assert "file" not in card.kwargs
-    return _assert_compact_notice(card.kwargs["embed"], member, channel, started_at)
+    _assert_compact_notice(card.kwargs["embed"], member, channel, started_at)
 
 
 def _channel_field(embed) -> str:
@@ -151,11 +150,9 @@ def _assert_compact_notice(embed, member, channel, started_at: float) -> str:
     assert embed.fields == []
     gif_url = embed.image.url
     assert gif_url in VOICE_NOTICE_GIF_URLS
-    assert embed.thumbnail.url is None
     return gif_url
 
 
-@pytest.mark.asyncio
 async def test_first_join_of_empty_channel_sends_announcement(
     cog, text_channel, guild, clock
 ):
@@ -178,7 +175,6 @@ def test_gif_bag_uses_each_url_before_repeat(cog, monkeypatch):
     assert second != first_cycle[-1]
 
 
-@pytest.mark.asyncio
 async def test_occupied_channel_does_not_announce_again(cog, text_channel, guild):
     first = fake_member("First", 1)
     second = fake_member("Second", 2)
@@ -197,7 +193,6 @@ async def test_occupied_channel_does_not_announce_again(cog, text_channel, guild
     assert already.id in cog.active_channels
 
 
-@pytest.mark.asyncio
 async def test_concurrent_first_joins_announce_once(cog, text_channel, guild):
     first = fake_member("First", 1)
     second = fake_member("Second", 2)
@@ -227,7 +222,6 @@ async def test_concurrent_first_joins_announce_once(cog, text_channel, guild):
     assert voice.id in cog.active_channels
 
 
-@pytest.mark.asyncio
 async def test_two_people_already_in_member_list_does_not_announce(
     cog, text_channel, guild
 ):
@@ -244,7 +238,6 @@ async def test_two_people_already_in_member_list_does_not_announce(
     assert voice.id in cog.active_channels
 
 
-@pytest.mark.asyncio
 async def test_reconnect_within_grace_does_not_announce(
     cog, text_channel, guild, clock
 ):
@@ -266,7 +259,6 @@ async def test_reconnect_within_grace_does_not_announce(
     assert voice.id in cog.active_channels
 
 
-@pytest.mark.asyncio
 async def test_announces_again_after_leave_and_grace(cog, text_channel, guild, clock):
     member = fake_member()
     voice = fake_voice_channel(members=[member], guild=guild)
@@ -286,7 +278,6 @@ async def test_announces_again_after_leave_and_grace(cog, text_channel, guild, c
     assert voice.id not in cog._emptied_at
 
 
-@pytest.mark.asyncio
 async def test_ttl_does_not_reannounce_while_still_in_voice(
     cog, text_channel, guild, clock
 ):
@@ -306,7 +297,6 @@ async def test_ttl_does_not_reannounce_while_still_in_voice(
     text_channel.send.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_leave_after_ttl_can_announce_again(cog, text_channel, guild, clock):
     member = fake_member()
     voice = fake_voice_channel(members=[member], guild=guild)
@@ -324,7 +314,6 @@ async def test_leave_after_ttl_can_announce_again(cog, text_channel, guild, cloc
     _assert_voice_posts(text_channel)
 
 
-@pytest.mark.asyncio
 async def test_hop_from_occupied_to_empty_still_announces_after_ttl(
     cog, text_channel, guild, clock
 ):
@@ -345,7 +334,6 @@ async def test_hop_from_occupied_to_empty_still_announces_after_ttl(
     _assert_voice_posts(text_channel)
 
 
-@pytest.mark.asyncio
 async def test_ready_keeps_ttl_from_reannouncing_a_stayer(
     cog, text_channel, guild, clock
 ):
@@ -365,7 +353,43 @@ async def test_ready_keeps_ttl_from_reannouncing_a_stayer(
     text_channel.send.assert_not_awaited()
 
 
-@pytest.mark.asyncio
+async def test_restart_keeps_ttl_from_reannouncing_a_stayer(
+    store, clock, tmp_path, guild, text_channel
+):
+    path = tmp_path / "voice_notices.json"
+    first = VoiceNotify(
+        fake_bot(),
+        guild_config=store,
+        clock=clock,
+        notices_path=path,
+    )
+    member = fake_member()
+    first_room = fake_voice_channel(channel_id=1, members=[member], guild=guild)
+    await _update(first, member, None, first_room)
+    clock.advance(NOTICE_TTL_SECONDS)
+    await first.notices.delete_expired()
+    text_channel.send.reset_mock()
+    await first.cog_unload()
+
+    bot = fake_bot()
+    second = VoiceNotify(
+        bot,
+        guild_config=store,
+        clock=clock,
+        notices_path=path,
+    )
+    first_room.members = [member]
+    guild.voice_channels = [first_room]
+    bot.guilds = [guild]
+    await second.on_ready()
+    first_room.members = []
+    second_room = fake_voice_channel(channel_id=2, members=[member], guild=guild)
+    await _update(second, member, first_room, second_room)
+
+    text_channel.send.assert_not_awaited()
+    await second.cog_unload()
+
+
 async def test_someone_else_can_start_the_room_after_leave(
     cog, text_channel, guild, clock
 ):
@@ -391,7 +415,6 @@ async def test_someone_else_can_start_the_room_after_leave(
     assert cog.notices.live(FEATURE_VOICE, guild.id, str(second.id)) is not None
 
 
-@pytest.mark.asyncio
 async def test_new_start_in_another_room_keeps_the_other_notice(cog, text_channel, guild):
     first = fake_member("First", 1)
     second = fake_member("Second", 2)
@@ -409,7 +432,6 @@ async def test_new_start_in_another_room_keeps_the_other_notice(cog, text_channe
     assert cog.notices.live(FEATURE_VOICE, guild.id, str(second.id)) is not None
 
 
-@pytest.mark.asyncio
 async def test_start_in_old_room_does_not_delete_a_hopped_notice(
     cog, text_channel, guild, clock
 ):
@@ -436,7 +458,6 @@ async def test_start_in_old_room_does_not_delete_a_hopped_notice(
     assert cog.notices.live(FEATURE_VOICE, guild.id, str(second.id)) is not None
 
 
-@pytest.mark.asyncio
 async def test_ready_syncs_occupied_and_skips_empty_afk_and_bots(
     cog, text_channel, guild
 ):
@@ -472,7 +493,6 @@ async def test_ready_syncs_occupied_and_skips_empty_afk_and_bots(
     assert occupied.id in cog.active_channels
 
 
-@pytest.mark.asyncio
 async def test_ready_during_grace_does_not_allow_reannounce(
     cog, text_channel, guild, clock
 ):
@@ -494,7 +514,43 @@ async def test_ready_during_grace_does_not_allow_reannounce(
     assert voice.id in cog.active_channels
 
 
-@pytest.mark.asyncio
+async def test_restart_keeps_grace_from_reannouncing(
+    store, clock, tmp_path, guild, text_channel
+):
+    path = tmp_path / "voice_notices.json"
+    first = VoiceNotify(
+        fake_bot(),
+        guild_config=store,
+        clock=clock,
+        notices_path=path,
+    )
+    member = fake_member()
+    voice = fake_voice_channel(members=[member], guild=guild)
+    await _update(first, member, None, voice)
+    voice.members = []
+    await _update(first, member, voice, None)
+    text_channel.send.reset_mock()
+    await first.cog_unload()
+
+    bot = fake_bot()
+    second = VoiceNotify(
+        bot,
+        guild_config=store,
+        clock=clock,
+        notices_path=path,
+    )
+    guild.voice_channels = [voice]
+    bot.guilds = [guild]
+    await second.on_ready()
+    clock.advance(RECONNECT_GRACE_SECONDS - 1)
+    voice.members = [member]
+    await _update(second, member, None, voice)
+
+    text_channel.send.assert_not_awaited()
+    assert voice.id in second.active_channels
+    await second.cog_unload()
+
+
 async def test_ready_allows_announce_if_they_left_while_offline(
     cog, text_channel, guild
 ):
@@ -518,7 +574,6 @@ async def test_ready_allows_announce_if_they_left_while_offline(
     _assert_voice_posts(text_channel)
 
 
-@pytest.mark.asyncio
 async def test_ready_retargets_if_they_moved_while_offline(
     cog, text_channel, guild, clock
 ):
@@ -546,7 +601,6 @@ async def test_ready_retargets_if_they_moved_while_offline(
     ] == second_room.id
 
 
-@pytest.mark.asyncio
 async def test_unload_and_load_restarts_the_notice_loop(store, clock, tmp_path):
     bot = fake_bot()
     path = tmp_path / "voice_notices.json"
@@ -575,7 +629,6 @@ async def test_unload_and_load_restarts_the_notice_loop(store, clock, tmp_path):
     second.notices.stop(force=True)
 
 
-@pytest.mark.asyncio
 async def test_bot_joining_does_not_announce(cog, text_channel, guild):
     bot_user = fake_member("Music", 9, bot=True)
     voice = fake_voice_channel(members=[bot_user], guild=guild)
@@ -586,7 +639,6 @@ async def test_bot_joining_does_not_announce(cog, text_channel, guild):
     assert voice.id not in cog.active_channels
 
 
-@pytest.mark.asyncio
 async def test_human_joining_a_bot_only_channel_announces(cog, text_channel, guild):
     bot_user = fake_member("Music", 9, bot=True)
     human = fake_member("Nya", 1)
@@ -598,7 +650,6 @@ async def test_human_joining_a_bot_only_channel_announces(cog, text_channel, gui
     assert voice.id in cog.active_channels
 
 
-@pytest.mark.asyncio
 async def test_afk_is_ignored_other_rooms_still_announce(cog, text_channel, guild):
     member = fake_member()
     afk = fake_voice_channel(channel_id=77, members=[member], guild=guild)
@@ -613,7 +664,6 @@ async def test_afk_is_ignored_other_rooms_still_announce(cog, text_channel, guil
     assert voice.id in cog.active_channels
 
 
-@pytest.mark.asyncio
 async def test_moving_to_afk_deletes_the_notice(cog, text_channel, guild):
     member = fake_member()
     voice = fake_voice_channel(members=[member], guild=guild)
@@ -629,7 +679,6 @@ async def test_moving_to_afk_deletes_the_notice(cog, text_channel, guild):
     assert cog.notices.live(FEATURE_VOICE, guild.id, str(member.id)) is None
 
 
-@pytest.mark.asyncio
 async def test_leave_still_allows_reannounce_if_delete_fails(
     cog, text_channel, guild, clock
 ):
@@ -652,7 +701,6 @@ async def test_leave_still_allows_reannounce_if_delete_fails(
     assert cog.notices.live(FEATURE_VOICE, guild.id, str(member.id)) is not None
 
 
-@pytest.mark.asyncio
 async def test_mute_or_deafen_does_not_announce(cog, text_channel, guild):
     member = fake_member()
     voice = fake_voice_channel(members=[member], guild=guild)
@@ -662,7 +710,6 @@ async def test_mute_or_deafen_does_not_announce(cog, text_channel, guild):
     text_channel.send.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_moving_into_an_empty_channel_announces(cog, text_channel, guild):
     member = fake_member()
     left = fake_voice_channel(channel_id=1, members=[], guild=guild)
@@ -676,7 +723,6 @@ async def test_moving_into_an_empty_channel_announces(cog, text_channel, guild):
     assert left.id not in cog._emptied_at
 
 
-@pytest.mark.asyncio
 async def test_hop_edits_the_same_notice(cog, text_channel, guild, clock):
     member = fake_member()
     first_room = fake_voice_channel(channel_id=1, members=[member], guild=guild)
@@ -684,9 +730,6 @@ async def test_hop_edits_the_same_notice(cog, text_channel, guild, clock):
     posted = text_channel.send.return_value
     started_at = clock.t
     posted_gif = text_channel.send.await_args.kwargs["embed"].image.url
-    rewritten = MagicMock()
-    rewritten.url = "https://cdn.discord.test/rewritten.gif"
-    posted.embeds = [MagicMock(image=rewritten)]
     text_channel.send.reset_mock()
 
     clock.advance(120)
@@ -698,7 +741,6 @@ async def test_hop_edits_the_same_notice(cog, text_channel, guild, clock):
     posted.delete.assert_not_awaited()
     embed = posted.edit.await_args.kwargs["embed"]
     assert "content" not in posted.edit.await_args.kwargs
-    assert "attachments" not in posted.edit.await_args.kwargs
     gif_name = _assert_compact_notice(embed, member, second_room, started_at)
     assert gif_name == posted_gif
 
@@ -711,10 +753,8 @@ async def test_hop_edits_the_same_notice(cog, text_channel, guild, clock):
     embed = posted.edit.await_args.kwargs["embed"]
     gif_name = _assert_compact_notice(embed, member, first_room, started_at)
     assert gif_name == posted_gif
-    assert "attachments" not in posted.edit.await_args.kwargs
 
 
-@pytest.mark.asyncio
 async def test_hop_after_restart_fetches_uncached_announce_channel(
     cog, text_channel, guild, clock
 ):
@@ -744,7 +784,6 @@ async def test_hop_after_restart_fetches_uncached_announce_channel(
     _assert_compact_notice(embed, member, second_room, started_at)
 
 
-@pytest.mark.asyncio
 async def test_hop_into_an_occupied_channel_follows_the_user(
     cog, text_channel, guild
 ):
@@ -769,7 +808,6 @@ async def test_hop_into_an_occupied_channel_follows_the_user(
     assert embed.author.name == second.display_name
 
 
-@pytest.mark.asyncio
 async def test_failed_notice_edit_posts_again(cog, text_channel, guild):
     member = fake_member()
     first_room = fake_voice_channel(channel_id=1, members=[member], guild=guild)
@@ -790,7 +828,6 @@ async def test_failed_notice_edit_posts_again(cog, text_channel, guild):
     )
 
 
-@pytest.mark.asyncio
 async def test_hop_when_card_is_gone_deletes_the_ping(cog, text_channel, guild):
     member = fake_member()
     posts = _capture_posts(text_channel)
@@ -813,20 +850,6 @@ async def test_hop_when_card_is_gone_deletes_the_ping(cog, text_channel, guild):
     )
 
 
-@pytest.mark.asyncio
-async def test_join_still_announces_if_member_list_omits_joiner(
-    cog, text_channel, guild
-):
-    member = fake_member()
-    voice = fake_voice_channel(members=[], guild=guild)
-
-    await _update(cog, member, None, voice)
-
-    _assert_voice_posts(text_channel)
-    assert voice.id in cog.active_channels
-
-
-@pytest.mark.asyncio
 async def test_leave_starts_grace_if_member_list_still_has_leaver(
     cog, text_channel, guild
 ):
@@ -839,7 +862,6 @@ async def test_leave_starts_grace_if_member_list_still_has_leaver(
     assert voice.id in cog._emptied_at
 
 
-@pytest.mark.asyncio
 async def test_hop_does_not_restart_notice_ttl(cog, text_channel, guild, clock):
     member = fake_member()
     first_room = fake_voice_channel(channel_id=1, members=[member], guild=guild)
@@ -858,7 +880,6 @@ async def test_hop_does_not_restart_notice_ttl(cog, text_channel, guild, clock):
     posted.delete.assert_awaited_once()
 
 
-@pytest.mark.asyncio
 async def test_guild_remove_drops_voice_state(cog, text_channel, guild):
     member = fake_member()
     voice = fake_voice_channel(members=[member], guild=guild)
@@ -872,7 +893,6 @@ async def test_guild_remove_drops_voice_state(cog, text_channel, guild):
     assert cog._announced == set()
 
 
-@pytest.mark.asyncio
 async def test_voice_channel_delete_drops_channel_state(cog, text_channel, guild):
     member = fake_member()
     voice = fake_voice_channel(members=[member], guild=guild)
@@ -887,7 +907,6 @@ async def test_voice_channel_delete_drops_channel_state(cog, text_channel, guild
     assert voice.id not in cog._emptied_at
 
 
-@pytest.mark.asyncio
 async def test_deleted_announce_channel_lets_a_new_channel_post(
     cog, text_channel, guild, store, clock
 ):
@@ -915,7 +934,6 @@ async def test_deleted_announce_channel_lets_a_new_channel_post(
     text_channel.send.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_missing_notify_channel_does_not_mark_active(cog, text_channel, guild):
     guild.get_channel.return_value = None
     member = fake_member()

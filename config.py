@@ -56,7 +56,9 @@ class Settings:
         enabled = [part.strip() for part in enabled_raw.split(",") if part.strip()]
         self.enabled_cogs: list[str] | None = enabled or None
 
-        # Optional. Set to a server ID so slash commands appear immediately while testing.
+        # Optional. Server ID for instant slash commands in that server only.
+        # Empty publishes globally (can take up to an hour). The unused scope
+        # is cleared so Discord does not list the same commands twice.
         raw_sync = (_first(environ, file_values, "SYNC_GUILD_ID") or "").strip()
         self.sync_guild_id: int | None = None
         if raw_sync:

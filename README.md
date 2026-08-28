@@ -21,7 +21,7 @@ COMMAND_PREFIX=!
 LOG_LEVEL=INFO
 # Empty loads every cog. Example: voice
 ENABLED_COGS=
-# Server ID so /commands appear immediately. Empty syncs globally (can take up to an hour).
+# Server ID for instant /commands in that server only. Empty syncs globally (can take up to an hour).
 SYNC_GUILD_ID=
 ```
 
