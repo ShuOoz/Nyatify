@@ -10,6 +10,17 @@ BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.txt"
 
 
+def write_text_atomic(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    """Write text by replacing the file, so a crash cannot leave it half-written."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    with tmp_path.open("w", encoding=encoding) as handle:
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+    tmp_path.replace(path)
+
+
 def _parse_config_file(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     if not path.exists():
@@ -41,12 +52,20 @@ class Settings:
         self.command_prefix = _first(environ, file_values, "COMMAND_PREFIX") or "!"
         self.log_level = (_first(environ, file_values, "LOG_LEVEL") or "INFO").upper()
 
-        notify_raw = _first(environ, file_values, "VOICE_NOTIFY_CHANNEL_ID")
-        self.voice_notify_channel_id = int(notify_raw) if notify_raw else None
-
         enabled_raw = _first(environ, file_values, "ENABLED_COGS") or ""
         enabled = [part.strip() for part in enabled_raw.split(",") if part.strip()]
         self.enabled_cogs: list[str] | None = enabled or None
+
+        # Optional. Set to a server ID so slash commands appear immediately while testing.
+        raw_sync = (_first(environ, file_values, "SYNC_GUILD_ID") or "").strip()
+        self.sync_guild_id: int | None = None
+        if raw_sync:
+            try:
+                self.sync_guild_id = int(raw_sync)
+            except ValueError as exc:
+                raise RuntimeError(
+                    "SYNC_GUILD_ID must be a Discord server ID (integer)."
+                ) from exc
 
     def require_token(self) -> str:
         if not self.token:

@@ -1,7 +1,8 @@
 DISCORD_TOKEN=your_bot_token_here
 COMMAND_PREFIX=!
-VOICE_NOTIFY_CHANNEL_ID=1480790303874224198
 LOG_LEVEL=INFO
-# Leave empty to load every function. Set to one name to isolate, e.g. voice_notify
+# Leave empty to load every cog. Set to one name to isolate, e.g. voice
 ENABLED_COGS=
+# Server ID so /commands show up immediately. Leave empty to sync globally (can take up to an hour).
+SYNC_GUILD_ID=
 

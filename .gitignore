@@ -1,5 +1,8 @@
 # Secrets
 config.txt
+
+# Per-server settings
+data/
 .env
 .env.*
 
