@@ -24,6 +24,11 @@ NAME = "thesportsdb"
 NAMES = frozenset({NAME})
 ADD_EXAMPLE = "a club name"
 CARD_KIND = "match"
+FETCH_FIELDS = (
+    ("sportsdb_base", "sportsdb_base"),
+    ("sportsdb_key", "sportsdb_key"),
+    ("client", "sportsdb"),
+)
 _TEAM_URL_RE = re.compile(r"thesportsdb\.com/team(?:\.php\?id=|/+)(\d+)", re.IGNORECASE)
 _Get = Callable[[str, dict[str, str] | None], Any]
 

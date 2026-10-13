@@ -73,7 +73,7 @@ async def test_ticket_drafts_artists_and_sales():
     await case_one_artist_keeps_the_model_string()
     await case_username_runs_when_there_is_no_bio()
     case_traditional_name_simplifies_for_search()
-    case_same_sale_is_quiet_and_a_second_sale_posts()
+    case_the_same_sale_posts_nothing_and_a_second_sale_posts()
     case_prune_keeps_a_followed_artist_and_drops_the_rest()
     case_other_artist_is_skipped()
     await case_a_new_artist_reads_the_past_week_once()
@@ -361,8 +361,8 @@ def case_second_sale_is_a_new_key():
     assert sale_seen(same.remember_key, stored)
     assert not sale_seen(second.remember_key, stored)
     legacy = "musicshow:周杰伦\n9月20日\n北京"
-    assert sale_seen(second.remember_key, {legacy})
-    assert sale_seen(legacy, {second.remember_key})
+    assert not sale_seen(second.remember_key, {legacy})
+    assert not sale_seen(legacy, {second.remember_key})
     timed = TicketShow("周杰伦", "9月20日", "K-Arena", window="8月28日 18:00开票")
     plain = TicketShow("周杰伦", "9月20日", "K-Arena")
     again = TicketShow("周杰伦", "9月20日", "K-Arena", window="9月10日 20:00二开")
@@ -372,9 +372,9 @@ def case_second_sale_is_a_new_key():
     )
     assert timed.remember_key and plain.remember_key and again.remember_key
     assert benz.remember_key and benz_timed.remember_key
-    assert sale_seen(plain.remember_key, {timed.remember_key})
-    assert sale_seen(timed.remember_key, {plain.remember_key})
-    assert sale_seen(benz.remember_key, {benz_timed.remember_key})
+    assert not sale_seen(plain.remember_key, {timed.remember_key})
+    assert not sale_seen(timed.remember_key, {plain.remember_key})
+    assert not sale_seen(benz.remember_key, {benz_timed.remember_key})
     assert not sale_seen(again.remember_key, {timed.remember_key})
 
 async def case_send_sale_posts_on_the_ticket_channel():
@@ -480,7 +480,7 @@ def _window_draft(window: str) -> TicketDraft:
     show = TicketShow("周杰伦", "9月20日", "北京", window=window)
     return TicketDraft("周杰伦 | 嘉年华", "", window, (show,))
 
-def case_same_sale_is_quiet_and_a_second_sale_posts():
+def case_the_same_sale_posts_nothing_and_a_second_sale_posts():
     first = _window_draft("8月28日 18:00开票")
     key = first.shows[0].remember_key
     assert key is not None

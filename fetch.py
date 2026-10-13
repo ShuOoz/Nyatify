@@ -6,7 +6,7 @@ import json
 import logging
 import random
 import re
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -173,9 +173,18 @@ def _line_from_raw(raw: Any) -> tuple[str, str]:
     return floor_text, since_text
 
 
+def _words_from_raw(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    words = raw.get("words")
+    if not isinstance(words, dict):
+        return {}
+    return {str(item_id): str(fp) for item_id, fp in words.items() if item_id and fp}
+
+
 def _bookmark_entry(
     ids: Sequence[str] | None = None, delivered: dict[str, list[str]] | None = None,
-    line: tuple[str, str] = ("", ""),
+    line: tuple[str, str] = ("", ""), words: Mapping[str, str] | None = None,
 ) -> dict[str, Any] | None:
     entry: dict[str, Any] = {}
     if ids:
@@ -186,6 +195,8 @@ def _bookmark_entry(
     if floor and since:
         entry["floor"] = floor
         entry["since"] = since
+    if words:
+        entry["words"] = dict(words)
     return entry or None
 
 
@@ -193,6 +204,7 @@ def _canonical_bookmarks(data: dict[str, Any]) -> dict[str, Any]:
     collected_ids: dict[str, list[str]] = {}
     collected_delivered: dict[str, dict[str, list[str]]] = {}
     collected_line: dict[str, tuple[str, str]] = {}
+    collected_words: dict[str, dict[str, str]] = {}
     for key, value in data.items():
         if not isinstance(key, str) or not isinstance(value, dict):
             continue
@@ -210,11 +222,17 @@ def _canonical_bookmarks(data: dict[str, Any]) -> dict[str, Any]:
         line = _line_from_raw(value)
         if line[0] and canon not in collected_line:
             collected_line[canon] = line
+        words = _words_from_raw(value)
+        if words:
+            collected_words.setdefault(canon, {}).update(words)
     out: dict[str, Any] = {}
-    keys = set(collected_ids) | set(collected_delivered) | set(collected_line)
+    keys = set(collected_ids) | set(collected_delivered) | set(collected_line) | set(collected_words)
     for key in sorted(keys):
         delivered = collected_delivered.get(key, {})
-        entry = _bookmark_entry(collected_ids.get(key), delivered, collected_line.get(key, ("", "")))
+        entry = _bookmark_entry(
+            collected_ids.get(key), delivered, collected_line.get(key, ("", "")),
+            collected_words.get(key),
+        )
         if entry is not None:
             out[key] = entry
     return out
@@ -226,12 +244,27 @@ class BookmarkStore:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or DEFAULT_BOOKMARKS_PATH
         self._data: dict[str, Any] | None = None
+        self._readable = True
 
     def is_seeded(self, source: str, account: str) -> bool:
         return bool(self._seen_id_list(source, account))
 
     def seen_ids(self, source: str, account: str) -> set[str]:
         return set(self._seen_id_list(source, account))
+
+    def words(self, source: str, account: str) -> dict[str, str]:
+        return _words_from_raw(self._entry(source, account))
+
+    def note_words(self, source: str, account: str, item_id: str, fingerprint: str) -> None:
+        item_key = str(item_id) if item_id else ""
+        if not item_key or not fingerprint:
+            return
+        words = self.words(source, account)
+        words[item_key] = fingerprint
+        self._put(
+            source, account, self._seen_id_list(source, account),
+            self._delivered_map(source, account), words=words,
+        )
 
     def remember(self, source: str, account: str, ids: Sequence[str]) -> None:
         incoming = [str(item_id) for item_id in ids if item_id]
@@ -327,16 +360,26 @@ class BookmarkStore:
         if not line[0]:
             line = _line_from_raw(old_entry)
         data.pop(old_key, None)
-        self._put(source, new_account, ids, delivered, line)
+        words = {**_words_from_raw(old_entry), **_words_from_raw(new_entry)}
+        self._put(source, new_account, ids, delivered, line, words)
 
     def _put(
         self, source: str, account: str, ids: Sequence[str],
         delivered: dict[str, list[str]], line: tuple[str, str] | None = None,
+        words: dict[str, str] | None = None,
     ) -> None:
         data = self._load()
+        if not self._readable:
+            log.error("Not saving bookmarks; %s could not be read.", self.path)
+            return
         key = seen_key(source, account)
         kept = self._line(source, account) if line is None else line
-        entry = _bookmark_entry(ids, delivered, kept)
+        if words is None:
+            current = data.get(key)
+            words = _words_from_raw(current if isinstance(current, dict) else {})
+        keep = {str(item) for item in ids} | set(delivered)
+        words = {item_id: fp for item_id, fp in words.items() if item_id in keep}
+        entry = _bookmark_entry(ids, delivered, kept, words)
         if entry is None:
             data.pop(key, None)
         else:
@@ -359,17 +402,23 @@ class BookmarkStore:
 
     def _load(self) -> dict[str, Any]:
         if self._data is None:
-            self._data = self._read()
+            data = self._read()
+            if self._readable:
+                self._data = data
+            return data
         return self._data
 
     def _read(self) -> dict[str, Any]:
         if not self.path.exists():
+            self._readable = True
             return {}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            log.exception("Could not read %s; using empty bookmarks.", self.path)
+            log.exception("Could not read %s; bookmarks were not replaced.", self.path)
+            self._readable = False
             return {}
+        self._readable = True
         if not isinstance(data, dict):
             return {}
         cleaned = _canonical_bookmarks(data)
@@ -378,6 +427,9 @@ class BookmarkStore:
         return cleaned
 
     def _save(self, data: dict[str, Any]) -> None:
+        if not self._readable:
+            log.error("Not saving bookmarks; %s could not be read.", self.path)
+            return
         payload = json.dumps(data, sort_keys=True, separators=(",", ":"))
         write_text_atomic(self.path, payload + "\n")
         self._data = data

@@ -4,18 +4,22 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from guild import GuildConfig
+from guild import (
+    GuildConfig,
+    announce_features,
+    register_announce_feature,
+    unregister_announce_feature,
+)
 from news.follows import (
     FEATURE_GAME,
     FEATURE_MATCH,
     FEATURE_OTHER,
     FEATURE_TICKET,
     FOLLOWS_KEY,
+    NEWS_FEATURES,
     TOPIC_UNASSIGNED,
     add_news_follow,
-    block_live_room,
     canonical_follow,
-    club_already_followed,
     fill_news_follow,
     follow_display_name,
     follow_game_name,
@@ -27,43 +31,59 @@ from news.follows import (
     match_news_follow,
     news_follow_ref,
     normalize_news_topic,
+    ordered_announce_features,
     parse_stored_time,
     parse_stored_times,
-    poll_plan,
     release_blank_ticket,
     remember_source,
     remember_ticket_artist,
     remove_news_follow,
     set_news_follow_topic,
     sort_news_follows,
-    sports_fetch_due,
-    sports_source_due,
     topics_for_platform,
 )
-from tests.helpers import ACCOUNT, GUILD_ID, fetched_item
+from tests.helpers import ACCOUNT, GUILD_ID
 
 
 def test_follows(news_store, tmp_path):
-    case_block_live_room_only_outside_other()
+    case_announce_features_put_voice_first_and_other_last()
     case_follow_round_trip_validation_and_club_ids(news_store)
     case_same_org_is_one_follow_per_game(news_store)
     case_ticket_studio_option_marks_the_artist()
-    case_stored_times_and_idle_boundary()
+    case_stored_times()
     case_topics_follow_the_platform()
     case_other_follow_keeps_the_studio_name_until_ticket(GuildConfig(tmp_path / "other.json"))
     reload = tmp_path / "reload"
     reload.mkdir()
     case_follow_reload_labels_and_legacy_topics(reload)
-    case_poll_plan_and_sports_schedule(GuildConfig(tmp_path / "plan.json"))
+    case_source_clock_and_cleared_kickoff(GuildConfig(tmp_path / "plan.json"))
     case_blank_ticket_returns_to_unassigned(GuildConfig(tmp_path / "blank.json"))
-    case_show_order_ref_and_silent_guild(GuildConfig(tmp_path / "order.json"))
+    case_show_order_and_ref()
 
-def case_block_live_room_only_outside_other():
-    live = fetched_item(title="今晚开播", text="https://live.bilibili.com/99")
-    assert block_live_room(live, FEATURE_GAME)
-    assert block_live_room(live, FEATURE_TICKET)
-    assert not block_live_room(live, FEATURE_OTHER)
-    assert not block_live_room(fetched_item(), FEATURE_GAME)
+def case_announce_features_put_voice_first_and_other_last():
+    before = announce_features()
+    for name in before:
+        unregister_announce_feature(name)
+    register_announce_feature("voice")
+    register_announce_feature("admin")
+    register_announce_feature("extra")
+    for name in NEWS_FEATURES:
+        register_announce_feature(name)
+    try:
+        assert ordered_announce_features() == (
+            "voice",
+            "extra",
+            "game",
+            "ticket",
+            "match",
+            "other",
+        )
+        assert "admin" not in ordered_announce_features()
+    finally:
+        for name in ("voice", "admin", "extra", *NEWS_FEATURES):
+            unregister_announce_feature(name)
+        for name in before:
+            register_announce_feature(name)
 
 
 def case_follow_round_trip_validation_and_club_ids(news_store):
@@ -163,21 +183,6 @@ def case_same_org_is_one_follow_per_game(news_store):
         fill_news_follow(news_store, 7, "pandascore", added["account"], sport=game)
     saved = list_news_follows(news_store, 7)
     assert {item["account"] for item in saved} == {slug for slug, _game in squads}
-    latest = saved[-1]
-    assert club_already_followed(
-        saved,
-        latest,
-        team_id=latest["account"],
-        source_name="Bilibili Gaming",
-        ignore_self=True,
-    ) is False
-    typed = canonical_follow("pandascore", "BLG", FEATURE_MATCH)
-    assert club_already_followed(
-        saved,
-        typed,
-        team_id="bilibili-gaming-lol",
-        source_name="Bilibili Gaming",
-    ) is True
     labels = {follow_option_name(item, saved) for item in saved}
     shown = {follow_game_name(item) for item in saved}
     assert labels == shown == {f"Bilibili Gaming · {game}" for _slug, game in squads}
@@ -242,82 +247,10 @@ def case_follow_reload_labels_and_legacy_topics(tmp_path):
     )
 
 
-def case_poll_plan_and_sports_schedule(news_store):
+def case_source_clock_and_cleared_kickoff(news_store):
     now = datetime(2026, 9, 5, 12, tzinfo=timezone.utc)
-    kickoff = now + timedelta(days=2)
-    assert sports_fetch_due(fetched_at=None, next_kickoff=kickoff, now=now)
-    assert not sports_fetch_due(
-        fetched_at=now, next_kickoff=kickoff, now=now + timedelta(hours=1)
-    )
-    assert sports_fetch_due(
-        fetched_at=now, next_kickoff=now + timedelta(hours=2), now=now + timedelta(minutes=10)
-    )
-    later_kick = now + timedelta(hours=12)
-    ended = now - timedelta(days=2)
-    assert not sports_fetch_due(
-        fetched_at=now, next_kickoff=(ended, later_kick), now=now, sport="Soccer"
-    )
-    assert sports_fetch_due(
-        fetched_at=now,
-        next_kickoff=(ended, later_kick),
-        now=now + timedelta(hours=6),
-        sport="Soccer",
-    )
-
-    idle_follow = {
-        "platform": "thesportsdb",
-        "account": "1",
-        "topic": FEATURE_MATCH,
-        "fetched_at": now.isoformat(),
-        "next_kickoff": (now + timedelta(days=2)).isoformat(),
-    }
-    stale = {
-        "platform": "thesportsdb",
-        "account": "1",
-        "topic": FEATURE_MATCH,
-        "fetched_at": (now - timedelta(days=3)).isoformat(),
-        "next_kickoff": (now - timedelta(hours=1)).isoformat(),
-    }
-    assert sports_source_due([idle_follow], now) is False
-    assert sports_source_due([idle_follow, stale], now) is False
-    assert sports_source_due(
-        [idle_follow, {"platform": "thesportsdb", "account": "1", "topic": FEATURE_MATCH}],
-        now,
-    ) is True
-
-    add_news_follow(news_store, GUILD_ID, "bilibili", "1", TOPIC_UNASSIGNED)
     add_news_follow(news_store, GUILD_ID, "bilibili", "2", FEATURE_GAME)
     add_news_follow(news_store, GUILD_ID, "thesportsdb", "133604", FEATURE_MATCH)
-    add_news_follow(news_store, GUILD_ID, "weibo", "1195230310", FEATURE_TICKET)
-    add_news_follow(news_store, GUILD_ID, "bilibili", "4", FEATURE_GAME)
-    keep, live_map, sports, posts, tickets = poll_plan(
-        news_store,
-        now=10.0,
-        now_wall=now,
-        poll_post=True,
-        poll_match=True,
-        poll_ticket=True,
-        skip_until={("bilibili", "2"): 99.0},
-        guild_ok=lambda _gid: True,
-    )
-    assert ("bilibili", "1") in keep
-    assert ("bilibili", "1") not in live_map
-    assert live_map[("bilibili", "2")] == [(GUILD_ID, FEATURE_GAME)]
-    assert posts == [("bilibili", "4")]
-    assert tickets == [("weibo", "1195230310")]
-    assert sports == [("thesportsdb", "133604")]
-    _, _, _, posts_only, tickets_off = poll_plan(
-        news_store,
-        now=10.0,
-        now_wall=now,
-        poll_post=True,
-        poll_match=False,
-        poll_ticket=False,
-        skip_until={},
-        guild_ok=lambda _gid: True,
-    )
-    assert ("weibo", "1195230310") not in tickets_off
-    assert ("bilibili", "4") in posts_only
     remember_source(
         news_store,
         [GUILD_ID],
@@ -364,7 +297,7 @@ def case_poll_plan_and_sports_schedule(news_store):
     ) is True
 
 
-def case_stored_times_and_idle_boundary():
+def case_stored_times():
     now = datetime(2026, 9, 5, 12, tzinfo=timezone.utc)
     assert parse_stored_time("2026-09-05T12:00:00Z") == now
     assert parse_stored_time("2026-09-05T12:00:00") == now
@@ -373,15 +306,6 @@ def case_stored_times_and_idle_boundary():
     assert parse_stored_times(
         "2026-09-05T12:00:00Z, 2026-09-05T12:00:00Z,bad,2026-09-06T00:00:00+00:00"
     ) == (now, datetime(2026, 9, 6, tzinfo=timezone.utc))
-    later = now + timedelta(days=3)
-    assert sports_fetch_due(
-        fetched_at=now, next_kickoff=later, now=now + timedelta(hours=24)
-    )
-    assert not sports_fetch_due(
-        fetched_at=now,
-        next_kickoff=later,
-        now=now + timedelta(hours=24) - timedelta(seconds=1),
-    )
 
 
 def case_topics_follow_the_platform():
@@ -423,7 +347,7 @@ def case_blank_ticket_returns_to_unassigned(news_store):
     assert saved["artist"] == "薛之谦工作室"
 
 
-def case_show_order_ref_and_silent_guild(news_store):
+def case_show_order_and_ref():
     game = [
         {
             "platform": "weibo",
@@ -494,19 +418,3 @@ def case_show_order_ref_and_silent_guild(news_store):
     assert match_news_follow([follow], "40d1b4446d2c24927951") == follow
     other = {**follow, "topic": FEATURE_TICKET, "account": "100"}
     assert match_news_follow([follow, other], "Studio") is None
-
-    add_news_follow(news_store, GUILD_ID, "bilibili", "7", FEATURE_GAME)
-    add_news_follow(news_store, 2, "bilibili", "8", FEATURE_TICKET)
-    now = datetime(2026, 9, 5, 12, tzinfo=timezone.utc)
-    keep, live, sports, posts, tickets = poll_plan(
-        news_store,
-        now=10.0,
-        now_wall=now,
-        poll_post=True,
-        poll_match=True,
-        skip_until={},
-        guild_ok=lambda _gid: False,
-    )
-    assert keep == {("bilibili", "7"), ("bilibili", "8")}
-    assert live == {}
-    assert sports == [] and posts == [] and tickets == []

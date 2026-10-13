@@ -3,19 +3,18 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta, timezone
 
-from fetch import FetchedItem
-from guild import GuildConfig
-from news.source.match.thesportsdb.clubs import club_alias, official_club_name, sport_for_club
-from news.source.match.common import watch_open
+from guild import GuildConfig, announce_features
+from news.source.match.thesportsdb.clubs import (
+    club_already_followed, official_club_name, sport_for_club,
+)
 from news.source.match.pandascore import NAME as PANDASCORE_PLATFORM
 from news.source.match.thesportsdb import NAME as SPORTS_PLATFORM
 from news.source.registry import (
     FETCH_PLATFORMS,
     feed_display_name,
-    is_live_room,
     is_match_platform,
     normalize_fetch_account,
     normalize_fetch_platform,
@@ -23,6 +22,8 @@ from news.source.registry import (
 
 FEATURE_GAME = "game"
 FEATURE_TICKET = "ticket"
+# First ticket pull posts this recent window. Older posts stay history.
+TICKET_BACKFILL = timedelta(days=7)
 FEATURE_MATCH = "match"
 FEATURE_OTHER = "other"
 TOPIC_UNASSIGNED = ""
@@ -36,7 +37,6 @@ SHOW_TOPICS = (
 )
 FOLLOWS_KEY = "news_follows"
 _EXTRA = ("added_at", "sport", "fetched_at", "next_kickoff", "artist")
-IDLE_REFRESH = timedelta(hours=24)
 
 Follow = dict[str, str]
 SourceKey = tuple[str, str]
@@ -64,18 +64,6 @@ def kickoff_times(value: datetime | Sequence[datetime] | None) -> tuple[datetime
     return (value,) if isinstance(value, datetime) else tuple(value)
 
 
-def sports_fetch_due(
-    *,
-    fetched_at: datetime | None,
-    next_kickoff: datetime | Sequence[datetime] | None,
-    now: datetime,
-    sport: str = "",
-) -> bool:
-    """Fetch in a fixture's preview/on/result window, else about once a day."""
-    open_now = any(watch_open(stamp, now, sport) for stamp in kickoff_times(next_kickoff))
-    return fetched_at is None or open_now or now - fetched_at >= IDLE_REFRESH
-
-
 def _trim(value: str | None, limit: int) -> str | None:
     if value is None:
         return None
@@ -97,11 +85,6 @@ def topics_for_platform(platform: str | None) -> tuple[str, ...]:
     if is_match_platform(key):
         return (FEATURE_MATCH,)
     return (FEATURE_GAME, FEATURE_TICKET, FEATURE_OTHER)
-
-
-def block_live_room(item: FetchedItem, topic: str) -> bool:
-    """Game/ticket leave live-room go-live to a live notice. Other may post it."""
-    return is_live_room(item) and topic != FEATURE_OTHER
 
 
 def follow_id(follow: Follow) -> tuple[str, str, str]:
@@ -190,51 +173,6 @@ def add_news_follow(
     follows.append(record)
     store.set_guild_list(guild_id, FOLLOWS_KEY, follows)
     return record
-
-
-def _club_ids(follow: Follow) -> set[str]:
-    ids = {follow["account"]} if follow["account"].isdigit() else set()
-    alias = club_alias(follow["account"]) or club_alias(follow.get("label") or "")
-    if alias is not None and alias.team_id.isdigit():
-        ids.add(alias.team_id)
-    return ids
-
-
-def _same_club(left: Follow, right: Follow) -> bool:
-    if left["platform"] != right["platform"]:
-        return False
-    if left["account"] == right["account"]:
-        return True
-    if left["platform"] != SPORTS_PLATFORM:
-        return False
-    return bool(_club_ids(left) & _club_ids(right))
-
-
-def club_already_followed(
-    follows: list[Follow],
-    follow: Follow,
-    *,
-    team_id: str | None = None,
-    source_name: str | None = None,
-    ignore_self: bool = False,
-) -> bool:
-    """True when another saved follow is this club, including a name learned after fetch."""
-    resolved = (team_id or "").strip()
-    name = (source_name or "").strip().casefold()
-    added = follow_id(follow)
-    for item in follows:
-        if ignore_self and follow_id(item) == added:
-            continue
-        if _same_club(item, follow):
-            return True
-        if not is_match_platform(follow["platform"]) or item["platform"] != follow["platform"]:
-            continue
-        names = (item["account"].casefold(), (item.get("label") or "").casefold())
-        if (resolved and item["account"] == resolved) or (
-            follow["platform"] != PANDASCORE_PLATFORM and name and name in names
-        ):
-            return True
-    return False
 
 
 def release_blank_ticket(
@@ -344,25 +282,6 @@ def fill_news_follow(
     return changed
 
 
-def sports_source_due(follows: list[Follow], now: datetime) -> bool:
-    latest: tuple[datetime, Follow] | None = None
-    for item in follows:
-        stamp = parse_stored_time(item.get("fetched_at"))
-        if stamp is None:
-            return True
-        if latest is None or stamp > latest[0]:
-            latest = (stamp, item)
-    if latest is None:
-        return False
-    fetched_at, item = latest
-    return sports_fetch_due(
-        fetched_at=fetched_at,
-        next_kickoff=parse_stored_times(item.get("next_kickoff")),
-        now=now,
-        sport=item.get("sport") or "",
-    )
-
-
 def remember_source(
     store: GuildConfig, guild_ids: Iterable[int], platform: str, account: str,
     source_name: str | None, now: datetime, *,
@@ -386,41 +305,6 @@ def remember_ticket_artist(
 ) -> None:
     for guild_id in guild_ids:
         fill_news_follow(store, guild_id, platform, account, artist=artist)
-
-
-def poll_plan(
-    store: GuildConfig, *, now: float, now_wall: datetime, poll_post: bool,
-    poll_match: bool, skip_until: dict[SourceKey, float], guild_ok: Callable[[int], bool],
-    poll_ticket: bool = True,
-) -> tuple[set[SourceKey], dict[SourceKey, list[GuildTopic]], list[SourceKey], list[SourceKey], list[SourceKey]]:
-    keep: set[SourceKey] = set()
-    live: dict[SourceKey, list[GuildTopic]] = {}
-    sports_follows: dict[SourceKey, list[Follow]] = {}
-    for guild_id, follow in iter_news_follows(store):
-        source = (follow["platform"], follow["account"])
-        keep.add(source)
-        if follow["topic"] == TOPIC_UNASSIGNED or not guild_ok(guild_id):
-            continue
-        live.setdefault(source, []).append((guild_id, follow["topic"]))
-        if is_match_platform(source[0]):
-            sports_follows.setdefault(source, []).append(follow)
-    sports: list[SourceKey] = []
-    posts: list[SourceKey] = []
-    tickets: list[SourceKey] = []
-    for source in sorted(live):
-        if now < skip_until.get(source, 0.0):
-            continue
-        if is_match_platform(source[0]):
-            if poll_match and sports_source_due(sports_follows.get(source, []), now_wall):
-                sports.append(source)
-            continue
-        topics = {topic for _, topic in live[source]}
-        if topics == {FEATURE_TICKET}:
-            if poll_ticket:
-                tickets.append(source)
-        elif poll_post:
-            posts.append(source)
-    return keep, live, sports, posts, tickets
 
 
 def remove_news_follow(
@@ -542,3 +426,13 @@ def match_news_follow(follows: list[Follow], query: str) -> Follow | None:
         return labeled[0]
     hits = account_hits(follows, query)
     return hits[0] if len(hits) == 1 else None
+
+
+def ordered_announce_features() -> tuple[str, ...]:
+    """Voice first, then other announcement functions, with news topics before other."""
+    names = {name for name in announce_features() if name != "admin"}
+    voice = ("voice",) if "voice" in names else ()
+    other = ("other",) if "other" in names else ()
+    news = tuple(name for name in NEWS_FEATURES if name in names and name != "other")
+    rest = tuple(sorted(names - {*voice, *NEWS_FEATURES}))
+    return voice + rest + news + other

@@ -397,14 +397,11 @@ async def case_a_failed_first_proxy_stays_closed_to_the_login(scene, monkeypatch
         _exit_lookup({"http://p0": None, "http://p1": "203.0.113.1", "http://p2": "203.0.113.2"}),
     )
     await rig.bili("1", "2", "3", "4", tickets=("1", "2", "3", "4"))
-    assert rig.fetcher.asks == []
+    assert rig.fetcher.asks
+    assert {mode for _account, _proxy, mode in rig.fetcher.asks} == {"app"}
+    assert "http://p0" not in {proxy for _account, proxy, _mode in rig.fetcher.asks}
     assert backup_proxy() == "http://p0"
-    assert rig.poll.held_tickets == {
-        ("bilibili", "1"),
-        ("bilibili", "2"),
-        ("bilibili", "3"),
-        ("bilibili", "4"),
-    }
+    assert rig.poll.held_tickets == set()
 
 
 
@@ -508,6 +505,7 @@ async def test_the_passes_of_one_round(monkeypatch, scene, caplog):
     with monkeypatch.context() as mp:
         await case_a_login_reads_only_the_first_proxy(scene, mp)
     await case_a_failed_exit_skips_the_login_and_holds_the_tickets(scene, monkeypatch)
+    await case_a_failed_first_proxy_does_not_use_login(scene, monkeypatch)
 
 
 async def case_the_app_passes_ask_a_slot_at_a_time_and_note_a_blank(scene):
@@ -591,3 +589,13 @@ async def case_a_failed_exit_skips_the_login_and_holds_the_tickets(scene, monkey
         await bili_round._login_passes(run, phones)
     assert run.asked == []
     assert rig.poll.held_tickets == {("bilibili", "a"), ("bilibili", "b")}
+
+
+async def case_a_failed_first_proxy_does_not_use_login(scene, monkeypatch):
+    rig = scene()
+    monkeypatch.setattr(settings, "bili_cookie", "SESSDATA=s; bili_jct=j")
+    monkeypatch.setattr(settings, "bili_proxies", ("http://fixed", "http://other"))
+    run = _probe(rig)
+    with bili_round.failed_exits(("http://fixed",)):
+        assert bili_round._use_login(run) is False
+    assert bili_round._use_login(run) is True

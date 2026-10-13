@@ -10,7 +10,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Awaitable, Callable, Sequence
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from dataclasses import dataclass, replace
 from typing import AbstractSet, Any
 
@@ -19,12 +19,11 @@ from fetch import EXCERPT_CHARS, FetchedItem, excerpt
 from news.cards import (
     TITLE_CHARS,
     _fit_lines,
-    _json_object,
     _one_line,
     _prose,
     news_card,
 )
-from news.follows import FEATURE_TICKET, remember_ticket_artist
+from news.follows import FEATURE_TICKET, TICKET_BACKFILL, remember_ticket_artist
 
 log = logging.getLogger(__name__)
 
@@ -88,6 +87,8 @@ async def one_artist(ai: AI, display_name: str, certification: str, bio: str) ->
 
 def artist_read(reply: str) -> ArtistRead:
     """An empty artist string is no person. Anything else unreadable is not an answer."""
+    from news.drafts import _json_object
+
     data = _json_object(reply)
     raw = data.get("artist") if data else None
     if not isinstance(raw, str):
@@ -111,8 +112,6 @@ def simplified(name: str) -> str:
 SHOW_FP_PREFIX = "musicshow:"
 _DAY = re.compile(r"(?:(\d{4})\s*[.\-/年]\s*)?(\d{1,2})\s*[.\-/月]\s*(\d{1,2})")
 _CLOCK = re.compile(r"(\d{1,2})\s*[:：]\s*(\d{2})")
-# A saved sale time is "8-28" or "8-28 18:00". A venue hyphen is not one.
-_SALE_STAMP = re.compile(r"\d{1,2}-\d{1,2}(?: \d{2}:\d{2})?\Z")
 
 
 def sale_stamp(window: str) -> str:
@@ -134,18 +133,8 @@ def sale_stamp(window: str) -> str:
 
 
 def sale_seen(key: str, stored: AbstractSet[str]) -> bool:
-    """True when this sale was already sent.
-
-    A stored show with no sale time still counts. A different sale time does not.
-    """
-    if key in stored:
-        return True
-    show, _, stamp = key.rpartition("\n")
-    if not show.startswith(SHOW_FP_PREFIX):
-        return False
-    if _SALE_STAMP.fullmatch(stamp):
-        return show in stored
-    return any(item == key or item.startswith(key + "\n") for item in stored)
+    """True when this exact sale key was already sent."""
+    return key in stored
 
 
 @dataclass(frozen=True)
@@ -265,6 +254,8 @@ def _fact(label: str, value: str, han: bool) -> str:
 
 
 def parse_ticket_draft(text: str, post: str) -> TicketDraft | None:
+    from news.drafts import _json_object
+
     data = _json_object(text)
     if data is None or not isinstance(data.get("title"), str):
         return None
@@ -311,7 +302,6 @@ def _parse_show(entry: Any, haystack: str, window: str) -> TicketShow | None:
 
 
 DAMAI_WEIBO = "1722647874"
-TICKET_BACKFILL = timedelta(days=7)
 StoredShows = Callable[[str, str, str], set[str]]
 
 

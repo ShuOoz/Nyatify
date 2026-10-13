@@ -3,32 +3,18 @@
 from __future__ import annotations
 
 import logging
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import discord
 import pytest
 from discord import app_commands
 from discord.ext import commands
 
-from announce import COMMAND_REPLY_SECONDS, HINT_TTL_SECONDS, notice_text, quote_text
-from cogs.admin import (
-    ANNOUNCE_SHOW_SECONDS,
-    HIDDEN_OWNER_COMMANDS,
-    Admin,
-    _announce_feature_autocomplete,
-    ordered_announce_features,
-)
-from guild import GuildConfig, register_announce_feature, unregister_announce_feature
-from news.follows import NEWS_FEATURES
+from announce import COMMAND_REPLY_SECONDS, notice_text, quote_text
+from cogs.admin import HIDDEN_OWNER_COMMANDS, Admin
+from guild import GuildConfig, register_announce_feature
 from nyatify import Nyatify
-from tests.helpers import (
-    embed_fields,
-    fake_bot,
-    fake_context,
-    fake_guild,
-    fake_text_channel,
-    reply_text,
-)
+from tests.helpers import fake_bot, fake_context, fake_guild, reply_text
 
 NEWS = "news"
 
@@ -105,96 +91,13 @@ async def case_admin_errors_are_clear(cog):
         assert reply_text(ctx) == quote_text(notice_text(expected))
 
 
-async def test_announce_settings(cog, store):
-    await case_announce_show_and_feature(cog, store)
-    await case_guild_remove_and_deleted_feature_channel(cog, store)
-
-
-async def case_announce_show_and_feature(cog, store):
+async def test_leaving_a_guild_drops_its_settings(cog, store):
     guild = fake_guild(7)
-    default = fake_text_channel(10, guild=guild)
-    override = fake_text_channel(55, guild=guild)
-    extra = fake_text_channel(66, guild=guild)
-    ctx = fake_context(guild)
-
-    await cog.announce_show.callback(cog, ctx)
-    fields = embed_fields(ctx.send.await_args.kwargs["embed"])
-    assert fields["Default"] == "not set"
-    assert fields["News"] == "using default"
-    assert ctx.send.await_args.kwargs["delete_after"] == ANNOUNCE_SHOW_SECONDS
-
-    await cog.announce_feature.callback(cog, ctx, default)
-    assert store.get_default_announce_channel_id(7) == default.id
-    assert "posts go to" in reply_text(ctx)
-    guild.get_channel.return_value = default
-    await cog.announce_show.callback(cog, ctx)
-    assert embed_fields(ctx.send.await_args.kwargs["embed"])["Default"] == default.mention
-
-    await cog.announce_feature.callback(cog, ctx, override, NEWS)
-    assert store.get_default_announce_channel_id(7) == default.id
-    assert store.get_feature_override_id(7, NEWS) == override.id
-    assert override.mention in reply_text(ctx)
-    guild.get_channel.side_effect = lambda channel_id: {
-        default.id: default,
-        override.id: override,
-        extra.id: extra,
-    }.get(channel_id)
-    await cog.announce_show.callback(cog, ctx)
-    shown = embed_fields(ctx.send.await_args.kwargs["embed"])
-    assert shown["Default"] == default.mention
-    assert shown["News"] == override.mention
-
-    await cog.announce_feature.callback(cog, ctx, default, NEWS)
-    assert store.get_feature_overrides(7) == {}
-    assert "default" in reply_text(ctx)
-
-    unregister_announce_feature(NEWS)
-    register_announce_feature("voice")
-    for name in NEWS_FEATURES:
-        register_announce_feature(name)
-    try:
-        assert ordered_announce_features() == (
-            "voice",
-            "game",
-            "ticket",
-            "match",
-            "other",
-        )
-        choices = await _announce_feature_autocomplete(MagicMock(), "")
-        assert [choice.value for choice in choices] == list(ordered_announce_features())
-        store.set_announce_channel_id(7, default.id)
-        store.set_feature_announce_channel_id(7, "other", extra.id)
-        await cog.announce_show.callback(cog, ctx)
-        names = [field.name for field in ctx.send.await_args.kwargs["embed"].fields]
-        by_name = embed_fields(ctx.send.await_args.kwargs["embed"])
-        assert names[0] == "Default"
-        assert names[1] == "Voice"
-        assert names[-1] == "Other"
-        assert by_name["Voice"] == "using default"
-        assert by_name["Other"] == extra.mention
-    finally:
-        unregister_announce_feature("voice")
-        for name in NEWS_FEATURES:
-            unregister_announce_feature(name)
-        register_announce_feature(NEWS)
-
-
-async def case_guild_remove_and_deleted_feature_channel(cog, store):
-    guild = fake_guild(7)
-    default = fake_text_channel(10, guild=guild)
-    override = fake_text_channel(55, guild=guild)
-    override.guild = guild
-    store.set_announce_channel_id(7, default.id)
-    store.set_feature_announce_channel_id(7, NEWS, override.id)
-    guild.get_channel.side_effect = lambda channel_id: {default.id: default}.get(channel_id)
-    await cog.on_guild_channel_delete(override)
-    assert store.get_feature_overrides(7) == {}
-    assert store.get_feature_override_id(7, NEWS) is None
-    assert store.get_default_announce_channel_id(7) == default.id
-    assert NEWS in default.send.await_args.args[0]
-    assert default.send.await_args.kwargs["delete_after"] == HINT_TTL_SECONDS
+    store.set_announce_channel_id(7, 10)
+    store.set_feature_announce_channel_id(7, NEWS, 55)
     await cog.on_guild_remove(guild)
     assert store.get_default_announce_channel_id(7) is None
+    assert store.get_feature_override_id(7, NEWS) is None
 
 
 def _news_group() -> app_commands.Group:

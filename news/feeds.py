@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -12,13 +12,14 @@ from typing import Any
 
 from config import settings
 from fetch import BookmarkStore, FetchError, FetchedItem, GetText, get_text
-from news.follows import FEATURE_TICKET
 from news.source.match.common import pinned_event_ids
-from news.source.match.thesportsdb.clubs import search_club_suggestions
-from news.source.post.bilibili.dynamics import QUIET
-from news.source.post.weibo.ticket import TICKET_BACKFILL
+from news.source.match.thesportsdb.clubs import (
+    DEFAULT_SPORTSDB_BASE,
+    DEFAULT_SPORTSDB_KEY,
+    SportsdbClient,
+)
 from news.source.registry import (
-    flood_cap,
+    fetch_fields,
     hold_bookmark,
     is_hard_skip,
     is_live_start,
@@ -35,16 +36,6 @@ BOOKMARK_SEEDED = "*"
 def _aware(when: datetime) -> datetime:
     return when if when.tzinfo is not None else when.replace(tzinfo=timezone.utc)
 
-
-_SOURCE_FIELDS = {
-    "thesportsdb": (("sportsdb_base", "sportsdb_base"), ("sportsdb_key", "sportsdb_key")),
-    "pandascore": (("token", "pandascore_token"), ("link_cache_path", "link_cache_path")),
-    "weibo": (("cookie", "weibo_cookie"), ("call", "weibo_call")),
-    "bilibili": (
-        ("cookie", "bili_cookie"), ("call", "bili_call"),
-        ("post", "bili_post"), ("buvid", "bili_buvid"),
-    ),
-}
 
 
 @dataclass
@@ -100,6 +91,11 @@ class Fetcher:
         self._now = now
         self.sportsdb_base = sportsdb_base
         self.sportsdb_key = sportsdb_key
+        self.sportsdb = SportsdbClient(
+            self._get,
+            base=sportsdb_base or DEFAULT_SPORTSDB_BASE,
+            key=sportsdb_key or DEFAULT_SPORTSDB_KEY,
+        )
         self.pandascore_token = pandascore_token
         self.link_cache_path = link_cache_path
         self.bili_cookie = bili_cookie or None
@@ -114,9 +110,7 @@ class Fetcher:
         return self._now() if self._now is not None else datetime.now(timezone.utc)
 
     def _source_kwargs(self, platform: str) -> dict[str, Any]:
-        source = source_named(platform)
-        fields = _SOURCE_FIELDS.get(source.NAME) if source is not None else None
-        return {} if not fields else {key: getattr(self, attr) for key, attr in fields}
+        return {key: getattr(self, attr) for key, attr in fetch_fields(platform)}
 
     async def load(
         self,
@@ -134,12 +128,6 @@ class Fetcher:
         if not is_match_platform(platform):
             items = items[: max(0, limit)]
         return replace(loaded, items=items)
-
-    async def search_clubs(self, query: str, *, limit: int = 25):
-        return await search_club_suggestions(
-            query, get=self._get, sportsdb_base=self.sportsdb_base,
-            sportsdb_key=self.sportsdb_key, limit=limit,
-        )
 
     async def search_accounts(
         self, platform: str, query: str, *, limit: int = 25
@@ -193,10 +181,12 @@ class Fetcher:
         if not any(item.item_id for item in items):
             return _result(loaded, [], [], starts)
         seeded = self.bookmarks.is_seeded(platform, bookmark)
-        if platform == "bilibili" and not seeded:
-            numbers = [int(item.item_id) for item in items if item.item_id.isdigit()]
-            if numbers:
-                self.bookmarks.remember_line(platform, bookmark, str(max(numbers)), now)
+        source = source_named(platform)
+        catch = getattr(source, "catch_floor", None)
+        if catch is not None and not seeded:
+            floor_text = catch(items)
+            if floor_text:
+                self.bookmarks.remember_line(platform, bookmark, floor_text, now)
         floor, since = self.bookmarks.catch_line(platform, bookmark) if seeded else (None, None)
         new, visible, skip_ids, seed_ids = _split_items(
             items,
@@ -205,6 +195,7 @@ class Fetcher:
             backfill=None if seeded else backfill,
             floor=floor,
             since=since,
+            quiet=getattr(source, "is_quiet", None),
         )
         opening = not seeded
         if seeded:
@@ -216,7 +207,12 @@ class Fetcher:
                 self.bookmarks.remember(platform, bookmark, window)
         else:
             self.bookmarks.remember(platform, bookmark, seed_ids or [BOOKMARK_SEEDED])
-        return _result(loaded, new, visible, starts, opening=opening)
+        opened = _result(loaded, new, visible, starts, opening=opening)
+        return _reopen_edits(self.bookmarks.words(platform, bookmark), opened)
+
+    def note_words(self, platform: str, account: str, item_id: str, fingerprint: str) -> None:
+        """Remember the words already judged, so an edit comes back after a restart."""
+        self.bookmarks.note_words(platform, account, item_id, fingerprint)
 
     async def _load(self, platform: str, account: str) -> FeedSnapshot:
         source = source_named(platform)
@@ -226,7 +222,7 @@ class Fetcher:
         kwargs = self._source_kwargs(platform)
         if is_match_platform(platform):
             kwargs["pinned_events"] = pinned_event_ids(self.delivered_item_ids(platform, account))
-        if source.NAME == "bilibili":
+        if source.NAME in {"bilibili", "weibo"}:
             kwargs["seen"] = self.bookmarks.seen_ids(platform, account)
         try:
             raw = await fetch(account, get=self._get, now=self._now, **kwargs)
@@ -249,6 +245,22 @@ class Fetcher:
         return await get_text(url, headers, getter=self._get_text)
 
 
+def _reopen_edits(words: Mapping[str, str], got: PullResult) -> PullResult:
+    """A judged post comes back when its words are no longer the stored fingerprint."""
+    from news import drafts
+
+    known = {item.item_id for item in got.new}
+    extra = []
+    for item in got.items:
+        if not item.item_id or item.item_id in known:
+            continue
+        saved = words.get(item.item_id)
+        if saved is not None and saved != drafts.word_fingerprint(item):
+            extra.append(item)
+            known.add(item.item_id)
+    return replace(got, new=[*got.new, *extra]) if extra else got
+
+
 def _result(loaded: FeedSnapshot, new, visible, starts, *, opening: bool = False) -> PullResult:
     return PullResult(
         loaded.name, new, visible, starts, loaded.sport, loaded.kickoffs, loaded.team_id,
@@ -259,6 +271,7 @@ def _result(loaded: FeedSnapshot, new, visible, starts, *, opening: bool = False
 def _split_items(
     items: Sequence[FetchedItem], now: datetime, seen: set[str] | None, *,
     backfill: timedelta | None = None, floor: int | None = None, since: datetime | None = None,
+    quiet: Callable[[FetchedItem], bool] | None = None,
 ) -> tuple[list[FetchedItem], list[FetchedItem], set[str], list[str]]:
     """First pull (`seen is None`) seeds history. `backfill` posts that recent window.
 
@@ -273,7 +286,7 @@ def _split_items(
     for item in items:
         if not item.item_id:
             continue
-        if QUIET in item.tags:
+        if quiet is not None and quiet(item):
             if seen is None:
                 seed_ids.append(item.item_id)
             else:
@@ -329,113 +342,3 @@ async def pull_locked(
             last = exc
     assert last is not None
     raise last
-
-
-async def deliver(
-    fetcher: Fetcher, platform: str, account: str, live: Sequence[tuple[int, str]],
-    got: PullResult,
-    announce: Callable[[str, str, Sequence[tuple[int, str]], FetchedItem], Awaitable[int]],
-) -> int:
-    """New items, then missed guilds, then the ticket week. The flood cap stops the round."""
-    cap = flood_cap(platform)
-    posted = posted_here = 0
-    done: set[str] = set()
-
-    async def send(items, audience, *, warn: str | None = None, bookmark: bool = True) -> None:
-        nonlocal posted, posted_here
-        for item in items:
-            if cap is not None and posted_here >= cap:
-                if warn:
-                    log.warning(warn, cap, len(items), platform, account, cap)
-                return
-            n = await announce(platform, account, audience, item)
-            posted += n
-            if bookmark:
-                done.add(item.item_id)
-            if n:
-                posted_here += 1
-
-    capped = cap is not None
-    await send(
-        list(reversed(got.new)) if capped else list(got.new), live,
-        warn="Posted %s of %s new items for %s %s (cap %s); the rest wait",
-    )
-    if cap is not None and posted_here >= cap:
-        return posted
-    now = fetcher._clock()
-    await send(
-        catch_up_items(fetcher, platform, account, live, got, done, cap, now=now),
-        live, bookmark=False,
-    )
-    ticket_live = [pair for pair in live if pair[1] == FEATURE_TICKET]
-    if not ticket_live or is_match_platform(platform) or (cap is not None and posted_here >= cap):
-        return posted
-    floor, since = (None, None) if got.opening else fetcher.bookmarks.catch_line(platform, account)
-    backlog = _ticket_backlog(got, done, now, floor=floor, since=since)
-    await send(
-        list(reversed(backlog)) if capped else backlog, ticket_live,
-        warn="Posted %s of %s ticket backlog items for %s %s (cap %s); the rest wait",
-    )
-    return posted
-
-
-def _ticket_backlog(
-    got: PullResult, done: set[str], now: datetime, *,
-    floor: int | None = None, since: datetime | None = None,
-) -> list[FetchedItem]:
-    """Ticket-week posts this pull will not announce as new. The opus page stays history."""
-    fresh = {item.item_id for item in got.new if item.item_id} | done
-    window = TICKET_BACKFILL
-    found: list[FetchedItem] = []
-    seen: set[str] = set()
-    for item in got.items:
-        if not item.item_id or item.item_id in seen or item.item_id in fresh:
-            continue
-        seen.add(item.item_id)
-        if hold_bookmark(item, now=now) or is_hard_skip(item, now=now):
-            continue
-        if _before_line(item, floor, since) or not _posted_since(item, now, window):
-            continue
-        found.append(item)
-    return found
-
-
-def _ticket_only(item: FetchedItem, already: set[str], now: datetime) -> bool:
-    """True when this recent post was handed only to ticket servers."""
-    if not already or is_match_platform(item.platform):
-        return False
-    if not _posted_since(item, now, TICKET_BACKFILL):
-        return False
-    return all(ref.partition(":")[2] == FEATURE_TICKET for ref in already)
-
-
-def catch_up_items(
-    fetcher: Fetcher, platform: str, account: str, live: Sequence[tuple[int, str]],
-    got: PullResult, done: set[str], cap: int | None, *, now: datetime | None = None,
-) -> list[FetchedItem]:
-    stamp = now if now is not None else datetime.now(timezone.utc)
-    firsts: dict[str, FetchedItem] = {}
-    for item in (*got.visible, *got.starts):
-        if item.item_id:
-            firsts.setdefault(item.item_id, item)
-    loaded = [item for item in firsts.values() if hold_bookmark(item, now=stamp)]
-    if not loaded:
-        if cap is None:
-            return []
-        loaded = list(firsts.values())[:1]
-    posted_now = {item.item_id for item in got.new if item.item_id}
-    wanted: list[FetchedItem] = []
-    for item in loaded:
-        if item.item_id in done:
-            continue
-        already = fetcher.delivered_refs(platform, account, item.item_id)
-        if is_match_platform(item.platform) and hold_bookmark(item, now=stamp):
-            wanted.append(item)
-            continue
-        if item.item_id in posted_now or not already or _ticket_only(item, already, stamp):
-            continue
-        if any(
-            not any(ref.startswith(f"{guild_id}:") for ref in already) for guild_id, _topic in live
-        ):
-            wanted.append(item)
-    return wanted

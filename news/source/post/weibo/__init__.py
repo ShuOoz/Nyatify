@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Collection
 from contextvars import ContextVar
 from datetime import datetime
 from typing import Any
@@ -32,6 +33,7 @@ from .visitor import (
 NAME = "weibo"
 NAMES = frozenset({NAME, "wb"})
 CARD_KIND = "post"
+FETCH_FIELDS = (("cookie", "weibo_cookie"), ("call", "weibo_call"))
 ADD_EXAMPLE = "a Weibo uid"
 AUTH_EXPIRED = "Weibo cookie expired. Use `/news cookie`."
 log = logging.getLogger(__name__)
@@ -70,7 +72,6 @@ _RESERVED = frozenset(
 )
 _UID_RE = re.compile(r"^\d{5,16}$")
 _NAME_SUFFIX = re.compile(r"的微博$")
-_REPOST_RE = re.compile(r"转发微博|转发了|//@")
 
 
 def weibo_uid(account: str, *, allow_uid: bool = False) -> str | None:
@@ -161,6 +162,7 @@ async def fetch_items(
     cookie: str | None = None,
     call: Any | None = None,
     request: Any | None = None,
+    seen: Collection[str] = (),
     **_kwargs: object,
 ) -> tuple[str | None, list[FetchedItem], str, str, bool]:
     """Latest mblogs. Extra tuple slots match the sports `fetch_items` shape."""
@@ -170,7 +172,7 @@ async def fetch_items(
         _store_guest(cookie_value)
     try:
         name, items, certification, bio = await fetch_mblogs(
-            account, cookie=cookie_value, call=call
+            account, cookie=cookie_value, call=call, seen=seen,
         )
     except FetchError as exc:
         if call is None and _guest_rejected(exc, cookie_value):
@@ -323,7 +325,6 @@ def _cookie_header(raw: str | None) -> str:
 def should_skip(item: FetchedItem, *, now: datetime | None = None) -> bool | None:
     if item.platform not in NAMES:
         return None
-    haystack = " ".join((item.title, item.text, *item.tags))
-    if _REPOST_RE.search(haystack):
+    if "repost" in item.tags:
         return True
     return None

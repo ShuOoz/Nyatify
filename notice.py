@@ -149,7 +149,7 @@ class TemporaryNotices:
         self._now = time.time if clock is None else clock
         self._notices: dict[tuple[str, int, str], TemporaryNotice] = {}
         self._posts: dict[int, list[QueuedPost]] = {}
-        self._loop_users = 0
+        self._cogs = 0
         self._purge = tasks.loop(seconds=PURGE_INTERVAL_SECONDS)(self._purge_once)
         self._purge.before_loop(self._wait_until_ready)
         self._load()
@@ -161,7 +161,7 @@ class TemporaryNotices:
         return iter(self._notices.values())
 
     def start(self) -> None:
-        self._loop_users += 1
+        self._cogs += 1
         if self._purge.is_running():
             return
         try:
@@ -170,8 +170,8 @@ class TemporaryNotices:
             self._purge.restart()
 
     def stop(self, *, force: bool = False) -> None:
-        self._loop_users = 0 if force else max(0, self._loop_users - 1)
-        if self._loop_users == 0 and self._purge.is_running():
+        self._cogs = 0 if force else max(0, self._cogs - 1)
+        if self._cogs == 0 and self._purge.is_running():
             self._purge.cancel()
 
     async def _wait_until_ready(self) -> None:
@@ -292,7 +292,12 @@ class TemporaryNotices:
 
         def channel_exists(guild_id: int, channel_id: int) -> bool:
             guild = guilds.get(guild_id)
-            getter = getattr(guild, "get_channel", None) if guild is not None else None
+            if guild is None:
+                return False
+            # Still connecting: the channel cache is empty, the channel was not deleted.
+            if getattr(guild, "unavailable", False) is True:
+                return True
+            getter = getattr(guild, "get_channel", None)
             return callable(getter) and getter(channel_id) is not None
 
         self.forget_missing_channels(channel_exists)

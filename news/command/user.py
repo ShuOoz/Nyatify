@@ -18,7 +18,6 @@ from news.follows import (
     SHOW_TOPICS,
     TOPIC_UNASSIGNED,
     add_news_follow,
-    club_already_followed,
     follow_display_name,
     follow_game_name,
     follow_option_name,
@@ -37,7 +36,7 @@ from news.follows import (
     topics_for_platform,
 )
 from news.source.match.thesportsdb import NAME as SPORTS_PLATFORM
-from news.source.match.thesportsdb.clubs import suggest_clubs
+from news.source.match.thesportsdb.clubs import club_already_followed, search_club_suggestions, suggest_clubs
 from news.source.post.weibo.ticket import ArtistName, ArtistRead, one_artist
 from news.source.registry import (
     FETCH_PLATFORMS,
@@ -252,7 +251,13 @@ class UserCommands:
         clubs = None
         suggestions = None
         if platform == SPORTS_PLATFORM and typed:
-            clubs = await self.fetcher.search_clubs(typed, limit=AUTOCOMPLETE_CAP)
+            clubs = await search_club_suggestions(
+                typed,
+                get=getattr(self.fetcher, "_get", None),
+                sportsdb_base=getattr(self.fetcher, "sportsdb_base", None),
+                sportsdb_key=getattr(self.fetcher, "sportsdb_key", None),
+                limit=AUTOCOMPLETE_CAP,
+            )
         elif platform is not None and is_match_platform(platform) and typed:
             suggestions = await self.fetcher.search_accounts(
                 platform, typed, limit=AUTOCOMPLETE_CAP

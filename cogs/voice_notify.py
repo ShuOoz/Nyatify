@@ -26,8 +26,8 @@ log = logging.getLogger(__name__)
 FEATURE_VOICE = "voice"
 REQUIRED_INTENTS = ("voice_states",)
 
-# After the last human leaves, ignore leave+rejoin for this long (disconnects / spam).
-# The start card is deleted as soon as that person leaves voice (or goes AFK).
+# Leave and AFK keep the card this long. A return retargets it; staying gone deletes it.
+# The same window is how long an emptied room still counts as the current session.
 RECONNECT_GRACE_SECONDS = 45.0
 # How long a voice-start message stays in the announce channel.
 # Expiry only removes the card. It does not allow another ping while they stay in voice.
@@ -65,6 +65,22 @@ def _is_afk_channel(channel: _VoiceRoom) -> bool:
     return afk is not None and channel.id == afk.id
 
 
+def _guild_unavailable(guild: object | None) -> bool:
+    return guild is not None and getattr(guild, "unavailable", False) is True
+
+
+def _keep_announced(
+    guild: object | None,
+    key: tuple[int, int],
+    present: _Presence,
+    away: dict[tuple[int, int], float],
+) -> bool:
+    """Unavailable guilds and an open leave window stay. A missing guild was left."""
+    if guild is None:
+        return False
+    return _guild_unavailable(guild) or key in present or key in away
+
+
 def _voice_channels(guild: discord.Guild) -> tuple[_VoiceRoom, ...]:
     return (*guild.voice_channels, *guild.stage_channels)
 
@@ -87,27 +103,33 @@ class VoiceNotify(NotifyCog):
     ) -> None:
         super().__init__(bot, notices_path=notices_path, clock=clock)
         self.guild_config = default_guild_config if guild_config is None else guild_config
-        # Rooms we already treated as a session (people inside, or last human left recently).
+        # Rooms whose start card was posted, plus rooms still inside the leave window.
         self.active_channels: set[int] = set()
         # People who already got a start notice this voice stint (guild_id, member_id).
-        # Kept after the 15-minute card is deleted, cleared when they leave or go AFK.
+        # Kept after the 15-minute card is deleted, cleared when their leave window ends.
         self._announced: set[tuple[int, int]] = set()
         # When the last human left. After grace, the room is dropped from active_channels.
         self._emptied_at: dict[int, float] = {}
+        # When an announced person left or went AFK. The card stays until this window ends.
+        self._away: dict[tuple[int, int], float] = {}
         self._join_locks: dict[int, asyncio.Lock] = {}
         self._grace_seconds = grace_seconds
         self._ttl_seconds = ttl_seconds
         self._now = self.notices._now
-        self._gif_bag: list[str] = []
+        self._gif_deck: list[str] = []
         self._last_gif: str | None = None
+        # False after a failed read, so a later save cannot replace the file with empty state.
+        self._sessions_ready = False
+        self._load_sessions()
 
     async def cog_unload(self) -> None:
         self._save_sessions()
         await super().cog_unload()
 
     async def _on_notify_ready(self) -> None:
-        if not self._announced and not self._emptied_at:
+        if not self._sessions_ready:
             self._load_sessions()
+        await self._expire_grace()
         present = self._sync_active_channels()
         await super()._on_notify_ready()
         await self._reconcile_voice_notices(present)
@@ -115,11 +137,14 @@ class VoiceNotify(NotifyCog):
 
     def _sync_active_channels(self) -> _Presence:
         """Refresh sessions from occupancy. Return who is in a non-AFK voice room."""
-        self._expire_grace()
         occupied: set[int] = set()
+        observed: set[int] = set()
         present: _Presence = {}
         for guild in self.bot.guilds:
+            if _guild_unavailable(guild):
+                continue
             for channel in _voice_channels(guild):
+                observed.add(channel.id)
                 if _is_afk_channel(channel):
                     continue
                 humans = [
@@ -132,18 +157,24 @@ class VoiceNotify(NotifyCog):
                     present[(guild.id, occupant.id)] = (occupant, channel)
         for channel_id in occupied:
             self._emptied_at.pop(channel_id, None)
-        self.active_channels = occupied | set(self._emptied_at)
+        # Channels we could not see (guild still connecting) keep the session we had.
+        preserved = self.active_channels - observed
+        self.active_channels = occupied | set(self._emptied_at) | preserved
         for channel_id in set(self._join_locks) - self.active_channels:
             self._join_locks.pop(channel_id, None)
         return present
 
     async def _reconcile_voice_notices(self, present: _Presence) -> None:
-        """Keep announced-this-stint only for people still in voice.
+        """Keep cards for people still in voice, and for a leave still inside grace.
 
-        Cards for people who left while we were down are removed so their next
-        start can ping. Live cards follow them if they switched rooms.
+        Someone gone with no saved leave window lost the card while we were down,
+        so their next start can ping. An unavailable guild keeps its cards.
         """
-        self._announced.intersection_update(present)
+        guilds = {guild.id: guild for guild in self.bot.guilds}
+        self._announced = {
+            key for key in self._announced
+            if _keep_announced(guilds.get(key[0]), key, present, self._away)
+        }
         stale: list[TemporaryNotice] = []
         for notice in list(self.notices):
             if notice.feature != FEATURE_VOICE:
@@ -152,9 +183,13 @@ class VoiceNotify(NotifyCog):
                 key = (notice.guild_id, int(notice.subject))
             except (TypeError, ValueError):
                 continue
+            guild = guilds.get(notice.guild_id)
+            if _guild_unavailable(guild):
+                continue
             location = present.get(key)
             if location is None:
-                stale.append(notice)
+                if key not in self._away:
+                    stale.append(notice)
                 continue
             self._announced.add(key)
             if notice.expires_at > self._now():
@@ -165,11 +200,14 @@ class VoiceNotify(NotifyCog):
             self._forget_notice(notice.guild_id, int(notice.subject))
         await self.notices.delete_expired()
 
-    def _expire_grace(self) -> None:
+    async def _expire_grace(self) -> None:
         now = self._now()
         for channel_id, emptied in list(self._emptied_at.items()):
             if now - emptied >= self._grace_seconds:
                 self._drop_channel(channel_id)
+        for key, left_at in list(self._away.items()):
+            if now - left_at >= self._grace_seconds:
+                await self._end_member_notice(*key)
 
     def _lock_for(self, channel_id: int) -> asyncio.Lock:
         return self._join_locks.setdefault(channel_id, asyncio.Lock())
@@ -185,6 +223,9 @@ class VoiceNotify(NotifyCog):
         self._announced = {
             key for key in self._announced if key[0] != guild.id
         }
+        self._away = {
+            key: left_at for key, left_at in self._away.items() if key[0] != guild.id
+        }
 
     def _sessions_path(self) -> Path | None:
         path = self.notices.path
@@ -195,13 +236,18 @@ class VoiceNotify(NotifyCog):
     def _load_sessions(self) -> None:
         path = self._sessions_path()
         if path is None or not path.exists():
+            self._sessions_ready = True
             return
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            log.exception("Could not read %s; starting with empty voice sessions.", path)
+            log.exception("Could not read %s; voice sessions were not replaced.", path)
+            self._sessions_ready = False
             return
+        self._sessions_ready = True
         if not isinstance(raw, dict):
+            return
+        if self._announced or self._emptied_at or self._away:
             return
         announced = raw.get("announced")
         if isinstance(announced, list):
@@ -228,16 +274,40 @@ class VoiceNotify(NotifyCog):
                 if channel_id is not None:
                     restored_empty[channel_id] = emptied_at
             self._emptied_at = restored_empty
+        away = raw.get("away")
+        if isinstance(away, list):
+            restored_away: dict[tuple[int, int], float] = {}
+            for item in away:
+                if not isinstance(item, (list, tuple)) or len(item) != 3:
+                    continue
+                guild_id = parse_snowflake(item[0])
+                member_id = parse_snowflake(item[1])
+                try:
+                    left_at = float(item[2])
+                except (TypeError, ValueError):
+                    continue
+                if guild_id is not None and member_id is not None:
+                    restored_away[(guild_id, member_id)] = left_at
+            self._away = restored_away
 
     def _save_sessions(self) -> None:
         path = self._sessions_path()
         if path is None:
+            return
+        if not self._sessions_ready:
+            self._load_sessions()
+        if not self._sessions_ready:
+            log.error("Not saving voice sessions; %s could not be read.", path)
             return
         payload = {
             "announced": sorted([guild_id, member_id] for guild_id, member_id in self._announced),
             "emptied_at": sorted(
                 [channel_id, emptied_at]
                 for channel_id, emptied_at in self._emptied_at.items()
+            ),
+            "away": sorted(
+                [guild_id, member_id, left_at]
+                for (guild_id, member_id), left_at in self._away.items()
             ),
         }
         try:
@@ -251,20 +321,26 @@ class VoiceNotify(NotifyCog):
     def _forget_notice(self, guild_id: int, member_id: int) -> None:
         self.notices.forget(FEATURE_VOICE, guild_id, str(member_id))
 
-    async def _vanish_member_notice(
-        self,
-        member: discord.Member,
-        guild: discord.Guild,
-    ) -> None:
-        self._announced.discard((guild.id, member.id))
-        notice = self.notices.get(FEATURE_VOICE, guild.id, str(member.id))
+    def _hold_member(self, member: discord.Member, guild: discord.Guild) -> None:
+        """Keep the card until the leave window ends. A return cancels this."""
+        key = (guild.id, member.id)
+        if key not in self._announced and self.notices.get(
+            FEATURE_VOICE, guild.id, str(member.id)
+        ) is None:
+            return
+        self._away.setdefault(key, self._now())
+
+    async def _end_member_notice(self, guild_id: int, member_id: int) -> None:
+        self._away.pop((guild_id, member_id), None)
+        self._announced.discard((guild_id, member_id))
+        notice = self.notices.get(FEATURE_VOICE, guild_id, str(member_id))
         if notice is None:
             return
         await self.notices.delete_now(notice)
         # Drop even if Discord could not delete, so a new session can ping.
-        self._forget_notice(guild.id, member.id)
+        self._forget_notice(guild_id, member_id)
 
-    def _on_leave_channel(
+    def _mark_emptied(
         self,
         member: discord.Member,
         channel: _VoiceRoom,
@@ -284,24 +360,27 @@ class VoiceNotify(NotifyCog):
         async with self._lock_for(channel.id):
             guild_id = channel.guild.id
             member_key = (guild_id, member.id)
-            others_present = _has_human(channel, excluding=member)
-            known_session = channel.id in self.active_channels
+            self._away.pop(member_key, None)
+            # A room counts only after a card was posted, or while its leave window is open.
+            started = channel.id in self.active_channels or channel.id in self._emptied_at
             self._emptied_at.pop(channel.id, None)
-            self.active_channels.add(channel.id)
 
             live = self.notices.live(FEATURE_VOICE, guild_id, str(member.id))
             if live is not None:
                 if await self._retarget_live_notice(member, channel, live):
                     self._announced.add(member_key)
+                    self.active_channels.add(channel.id)
                     return
             elif member_key in self._announced:
+                self.active_channels.add(channel.id)
                 return
-            if others_present or known_session:
+            if started:
+                self.active_channels.add(channel.id)
                 return
 
             if not await self._announce_channel_start(member, channel):
-                self.active_channels.discard(channel.id)
                 return
+            self.active_channels.add(channel.id)
             self._announced.add(member_key)
 
     @commands.Cog.listener()
@@ -318,13 +397,11 @@ class VoiceNotify(NotifyCog):
         if before_id == after_id:
             return
         try:
-            self._expire_grace()
+            await self._expire_grace()
             if before_channel is not None:
-                self._on_leave_channel(member, before_channel)
+                self._mark_emptied(member, before_channel)
             if after_channel is None or _is_afk_channel(after_channel):
-                await self._vanish_member_notice(
-                    member, (before_channel or after_channel).guild
-                )
+                self._hold_member(member, (before_channel or after_channel).guild)
                 return
             await self._on_join_channel(member, after_channel)
         finally:
@@ -344,19 +421,19 @@ class VoiceNotify(NotifyCog):
         await super().on_guild_channel_delete(channel)
 
     def _pick_gif(self) -> str:
-        if not self._gif_bag:
-            self._gif_bag = list(VOICE_NOTICE_GIF_URLS)
-            random.shuffle(self._gif_bag)
+        if not self._gif_deck:
+            self._gif_deck = list(VOICE_NOTICE_GIF_URLS)
+            random.shuffle(self._gif_deck)
             if (
                 self._last_gif
-                and len(self._gif_bag) > 1
-                and self._gif_bag[-1] == self._last_gif
+                and len(self._gif_deck) > 1
+                and self._gif_deck[-1] == self._last_gif
             ):
-                self._gif_bag[0], self._gif_bag[-1] = (
-                    self._gif_bag[-1],
-                    self._gif_bag[0],
+                self._gif_deck[0], self._gif_deck[-1] = (
+                    self._gif_deck[-1],
+                    self._gif_deck[0],
                 )
-        picked = self._gif_bag.pop()
+        picked = self._gif_deck.pop()
         self._last_gif = picked
         return picked
 

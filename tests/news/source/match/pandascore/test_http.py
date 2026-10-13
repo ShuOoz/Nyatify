@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import json
+
 from tests.helpers import utc
 
 SLUG = "paper-rex-valorant"
 NOW = utc(2026, 9, 29, 12)
 
 
-from news.source.match.pandascore.http import SeriesScore, parse_match, stage_for
+from news.source.match.pandascore.http import (
+    PandaScoreClient,
+    SeriesScore,
+    TeamRef,
+    parse_match,
+    stage_for,
+)
 
 
 def _team(team_id: int, slug: str, name: str) -> dict:
@@ -102,3 +110,29 @@ def case_scheduled_at_fills_when_begin_at_is_empty():
     match = parse_match(row, followed_slug=SLUG)
     assert match is not None
     assert match.scheduled_at is not None
+
+
+async def test_a_later_list_replaces_not_started_and_a_pin_is_looked_up():
+    rows = {
+        "/matches/running": [_match_row(3, status="running")],
+        "/matches/upcoming": [_match_row(4, status="not_started")],
+        "/matches/past": [
+            _match_row(3, status="finished"),
+            _match_row(4, status="finished", followed_score=2, opponent_score=1),
+        ],
+        "/matches/9": _match_row(9, status="finished"),
+    }
+
+    async def get(url: str, _headers):
+        for path, body in rows.items():
+            if path in url:
+                return json.dumps(body)
+        return "[]"
+
+    client = PandaScoreClient(get, token="t")
+    team = TeamRef(slug=SLUG, name="Paper Rex", team_id=1)
+    matches = await client.team_matches(team, ["9", "4"])
+    by_id = {match.match_id: match for match in matches}
+    assert by_id["3"].status == "running"
+    assert by_id["4"].status == "finished"
+    assert by_id["9"].status == "finished"

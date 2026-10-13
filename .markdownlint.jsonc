@@ -1,0 +1,10 @@
+{
+  // GitHub README layout: badges, HTML, and several top-level sections.
+  // MD013 stays off, matching the markdownlint extension default.
+  "MD013": false,
+  "MD025": false,
+  "MD033": false,
+  "MD036": false,
+  "MD040": false,
+  "MD041": false
+}

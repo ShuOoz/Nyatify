@@ -2,13 +2,17 @@ DISCORD_TOKEN=your_bot_token_here
 # Prefix for !ping only. Other commands are slash-only.
 COMMAND_PREFIX=!
 LOG_LEVEL=INFO
+
 # Leave empty to load every cog. Set to one name to isolate, e.g. voice
 ENABLED_COGS=
+
 # Server ID for instant /commands in that server only. Empty syncs globally (can take up to an hour).
 SYNC_GUILD_ID=
+
 # Password for /admin. Shows /cogs /load /unload /reload, /news cookie, and /news check.
 # Leave the password empty to hide them. Empty ADMIN_PASSWORD leaves them hidden. A restart hides them too.
 ADMIN_PASSWORD=
+
 # /news cookie platform is Bilibili or Weibo. login is the Cookie header.
 # A blank login refreshes the saved Bilibili login.
 # Polls keep each proxy's phones in data/bili_phones.json. Empty /news cookie shows whether a phone is saved.
@@ -18,32 +22,41 @@ ADMIN_PASSWORD=
 BILI_COOKIE_UID=0
 BILI_COOKIE=
 BILI_AC_TIME=
+
 # Optional. Empty: mint a Sina visitor SUB on first poll (public posts).
 # Or paste SUB from m.weibo.cn for accounts that need login. Visit cookies stay in-process.
 WEIBO_COOKIES=
+
 # Optional. Comma-separated. Empty is a direct connection.
 # Each phone is saved with one proxy and is never sent on another.
 # The visitor backup uses the account's proxy. A saved login reads the recent page on the first proxy only.
 # Match scores and Discord stay direct.
 BILI_PROXY=
+
 # How many phones one proxy may carry, and how many accounts share a phone.
 # The account count is used while those phones can cover the list.
 # A longer list puts more accounts on each phone, so every account is still asked.
 BILI_PHONES_PER_PROXY=1
 BILI_ACCOUNTS_PER_PHONE=2
+
 # Optional. Comma-separated. Empty is a direct connection.
 # Each guest SUB stays on the proxy that minted it. A saved login uses the first proxy only.
 WEIBO_PROXY=
+
 # Look up each Bilibili and Weibo proxy's exit IP before a check.
 # A failed lookup, or two proxies with the same exit, leaves that proxy out of this check.
 # A proxy whose exit changed gets new Bilibili phones, or a new Weibo guest.
 # 0 skips the lookup, so two ports can still share an exit.
 IP_CHECK=1
+
 AI_PROXY=
+
 # Team matches (kickoff + full time). Empty uses TheSportsDB free test key.
 # THESPORTSDB_KEY=
+
 # PandaScore token for esports team matches. Empty disables pandascore fetches.
 PANDASCORE_TOKEN=
+
 # Chat model host. Empty URL or model = no AI; news cards use the original excerpt.
 # Full chat URL. DeepSeek: https://api.deepseek.com/chat/completions
 # Model id for V4.1 Flash is deepseek-flash. It thinks. The thought is not part

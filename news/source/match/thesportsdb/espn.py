@@ -290,7 +290,9 @@ def overlay_espn(
     club: str = "",
 ) -> MatchState:
     home, away = _scores_for_state(state, game, club)
-    keep = not from_board and state.home_score and state.away_score
+    # A summary fills a blank or 0-0. A real SportsDB score stays. The day board always writes.
+    nil = {state.home_score, state.away_score} <= {"0", "0.0"}
+    keep = not from_board and bool(state.home_score and state.away_score) and not nil
     prior = () if from_board else _fact_parts(state.facts)
     notes = tuple(dict.fromkeys([*prior, *(game.notes or game.leaders)]))
     return replace(

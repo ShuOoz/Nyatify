@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from fetch import FetchedItem
+from news.follows import FEATURE_MATCH
 from news.source.match.common import (
-    CHECK_FORWARD,
     END_TAG,
     NEXT_TAG,
     PREVIEW_BEFORE,
@@ -14,7 +14,6 @@ from news.source.match.common import (
     START_TAG,
     hold_bookmark,
     hold_until,
-    in_play,
     is_match_item,
     item_role,
     kickoff_id,
@@ -27,13 +26,14 @@ from news.source.match.common import (
     ordered_match_items,
     parse_iso,
     pick_check,
-    pick_latest_match,
     pick_next_match,
     pick_preview,
     pinned_event_ids,
     should_skip,
     skip_label,
     sources_awaiting_start,
+    sports_fetch_due,
+    sports_source_due,
     start_due,
     started_keys,
     status_key,
@@ -47,6 +47,7 @@ def test_match_rules():
     case_card_lines_clocks_and_order()
     case_watch_windows_preview_and_hold()
     case_start_watch_covers_both_feeds()
+    case_sports_fetch_waits_out_a_quiet_day()
 
 
 def _match(
@@ -91,9 +92,9 @@ def case_card_lines_clocks_and_order():
         "**League** | Premier League",
         "Game Phase | 2nd half",
     ]
-    quiet = match_card_body("Over", "  ", "", "Enjoy the rest of your day.", live=False)
-    assert "**Home**" not in quiet and "**League**" not in quiet
-    assert quiet.endswith("**Details**\nEnjoy the rest of your day.")
+    bare = match_card_body("Over", "  ", "", "Enjoy the rest of your day.", live=False)
+    assert "**Home**" not in bare and "**League**" not in bare
+    assert bare.endswith("**Details**\nEnjoy the rest of your day.")
 
     assert status_key("Status Final") == "final"
     assert status_key("Match_Finished") == "match finished"
@@ -110,10 +111,6 @@ def case_card_lines_clocks_and_order():
     assert live_cap("Hockey") == timedelta(hours=4)
     assert live_cap("Tennis") == timedelta(hours=8)
     assert live_cap("Curling") == timedelta(hours=4)
-    assert in_play(now, now - PREVIEW_BEFORE, "soccer")
-    assert not in_play(now, now - PREVIEW_BEFORE - timedelta(seconds=1), "soccer")
-    assert in_play(now, now + live_cap("soccer"), "soccer")
-    assert not in_play(now, now + live_cap("soccer") + timedelta(seconds=1), "soccer")
     assert watch_open(now, now + timedelta(hours=40), "soccer")
     assert not watch_open(now, now + timedelta(hours=40, seconds=1), "soccer")
 
@@ -206,17 +203,11 @@ def case_watch_windows_preview_and_hold():
     assert pick_preview([idle], now=now).item_id == "idle"
     gone = _match("gone", ("match", "end"), now - timedelta(days=3))
     assert pick_preview([later, gone], now=now).item_id == "later"
-    assert pick_latest_match([later, soon, live], now=now).item_id == "live"
-    assert pick_latest_match([later, gone], now=now).item_id == "gone"
-    assert pick_latest_match([later, soon], now=now).item_id == "soon"
-    assert pick_latest_match([old, fresh], now=now).item_id == "fresh"
     assert pick_next_match([later, soon, live], now=now).item_id == "live"
     assert pick_next_match([later, gone], now=now).item_id == "later"
     assert pick_next_match([later, soon], now=now).item_id == "soon"
     assert pick_next_match([old, fresh], now=now).item_id == "fresh"
-    assert pick_check([later, gone], now=now).item_id == (
-        "later" if CHECK_FORWARD else "gone"
-    )
+    assert pick_check([later, gone], now=now).item_id == "later"
     post = _match("p", ("post",))
     assert should_skip(later, now=now) is True
     assert should_skip(soon, now=now) is False
@@ -239,3 +230,56 @@ def case_watch_windows_preview_and_hold():
     assert pinned_event_ids(["2200001:start"]) == ("2200001",)
     assert pinned_event_ids(["2200001:next", "2200001:end"]) == ()
     assert pinned_event_ids(["2200001:skip"]) == ()
+
+
+def case_sports_fetch_waits_out_a_quiet_day():
+    now = datetime(2026, 9, 5, 12, tzinfo=timezone.utc)
+    kickoff = now + timedelta(days=2)
+    assert sports_fetch_due(fetched_at=None, next_kickoff=kickoff, now=now)
+    assert not sports_fetch_due(
+        fetched_at=now, next_kickoff=kickoff, now=now + timedelta(hours=1)
+    )
+    assert sports_fetch_due(
+        fetched_at=now, next_kickoff=now + timedelta(hours=2), now=now + timedelta(minutes=10)
+    )
+    later_kick = now + timedelta(hours=12)
+    ended = now - timedelta(days=2)
+    assert not sports_fetch_due(
+        fetched_at=now, next_kickoff=(ended, later_kick), now=now, sport="Soccer"
+    )
+    assert sports_fetch_due(
+        fetched_at=now,
+        next_kickoff=(ended, later_kick),
+        now=now + timedelta(hours=6),
+        sport="Soccer",
+    )
+    later = now + timedelta(days=3)
+    assert sports_fetch_due(
+        fetched_at=now, next_kickoff=later, now=now + timedelta(hours=24)
+    )
+    assert not sports_fetch_due(
+        fetched_at=now,
+        next_kickoff=later,
+        now=now + timedelta(hours=24) - timedelta(seconds=1),
+    )
+
+    idle_follow = {
+        "platform": "thesportsdb",
+        "account": "1",
+        "topic": FEATURE_MATCH,
+        "fetched_at": now.isoformat(),
+        "next_kickoff": (now + timedelta(days=2)).isoformat(),
+    }
+    stale = {
+        "platform": "thesportsdb",
+        "account": "1",
+        "topic": FEATURE_MATCH,
+        "fetched_at": (now - timedelta(days=3)).isoformat(),
+        "next_kickoff": (now - timedelta(hours=1)).isoformat(),
+    }
+    assert sports_source_due([idle_follow], now) is False
+    assert sports_source_due([idle_follow, stale], now) is False
+    assert sports_source_due(
+        [idle_follow, {"platform": "thesportsdb", "account": "1", "topic": FEATURE_MATCH}],
+        now,
+    ) is True

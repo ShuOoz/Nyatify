@@ -24,7 +24,7 @@ from news.source.match.thesportsdb.matchstate import (
     day_scan_labels,
     scan_days,
 )
-from news.source.match.thesportsdb.clubs import search_club_suggestions, sportsdb_url
+from news.source.match.thesportsdb.clubs import sportsdb_url
 from news.source.post.bilibili import BiliCookies
 from news.source.post.bilibili.round import BiliState, poll_bili
 from news.source.post.weibo.round import ProxyPool, poll_damai, poll_weibo
@@ -451,6 +451,7 @@ class ScriptedFetcher:
         self.starts: list[FetchedItem] = []
         self.loaded = loaded
         self.bookmarks = _NoLine()
+        self.words: dict[tuple[str, str, str], str] = {}
 
     def _clock(self) -> datetime:
         return datetime.now(timezone.utc)
@@ -503,7 +504,7 @@ class ScriptedFetcher:
             ask.posts = True
         items = list(self.new)
         visible = list(self.loaded) if self.loaded is not None else list(items)
-        return PullResult(
+        got = PullResult(
             self._source(),
             items,
             visible,
@@ -513,6 +514,14 @@ class ScriptedFetcher:
             self.team_id,
             items=visible,
         )
+        from news.feeds import _reopen_edits
+
+        saved = {
+            item_id: fingerprint
+            for (plat, acct, item_id), fingerprint in self.words.items()
+            if plat == platform and acct == (self.team_id or account)
+        }
+        return _reopen_edits(saved, got)
 
     async def load(
         self,
@@ -540,6 +549,9 @@ class ScriptedFetcher:
 
     def mark_seen(self, platform: str, account: str, ids) -> None:
         self.seen_calls.append((platform, account, list(ids)))
+
+    def note_words(self, platform: str, account: str, item_id: str, fingerprint: str) -> None:
+        self.words[(platform, account, item_id)] = fingerprint
 
     def delivered_refs(self, platform: str, account: str, item_id: str) -> set[str]:
         return set(self._delivered.get((platform, account, item_id), set()))
@@ -575,10 +587,6 @@ class ScriptedFetcher:
 
         self.pull = pull
         return self
-
-    async def search_clubs(self, query: str, *, limit: int = 25):
-        return await search_club_suggestions(query, limit=limit)
-
 
 def script_fetcher(cog, **kwargs) -> ScriptedFetcher:
     cog.fetcher = ScriptedFetcher(**kwargs)

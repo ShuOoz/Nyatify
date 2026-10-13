@@ -16,10 +16,10 @@ from news.source.post.common import (
 )
 from .app import app_buvid, saved_buvid
 # Read by name through the source registry: is_live_room, should_skip,
-# for_model, note_list_post. shows_post below calls shows_list_post.
+# for_model, note_list_post, is_quiet, catch_floor.
 from .dynamics import (  # noqa: F401
-    fetch_dynamics, for_model, is_live_room, note_list_post, should_skip,
-    shows_list_post, space_stats,
+    LIST, catch_floor, fetch_dynamics, for_model, is_live_room, is_quiet,
+    note_list_post, should_skip, space_stats,
 )
 from .browser import (
     bili_login_effective, clear_wbi_key, close_bili_connections, refresh_bili_login_cookie,
@@ -28,6 +28,10 @@ from .browser import (
 NAME = "bilibili"
 NAMES = frozenset({NAME, "bili"})
 CARD_KIND = "post"
+FETCH_FIELDS = (
+    ("cookie", "bili_cookie"), ("call", "bili_call"),
+    ("post", "bili_post"), ("buvid", "bili_buvid"),
+)
 ADD_EXAMPLE = "a uid or space link"
 AUTH_EXPIRED = "Bilibili cookie expired. Use `/news cookie`."
 # 0 means no login uid.
@@ -108,8 +112,17 @@ def feed_fault(exc: BaseException) -> FeedFault | None:
     return classify_feed_fault(NAME, exc)
 
 
+def block_live_room(item: FetchedItem, topic: str) -> bool:
+    """Game/ticket leave live-room go-live to a live notice. Other may post it."""
+    from news.follows import FEATURE_OTHER
+
+    return is_live_room(item) and topic != FEATURE_OTHER
+
+
 def shows_post(item: FetchedItem, topic: str) -> bool:
-    return shows_list_post(item, topic)
+    from news.follows import FEATURE_GAME
+
+    return LIST not in item.tags or topic == FEATURE_GAME
 
 
 def halt_round(poll: Any, account: str, exc: BaseException, *, proxy: str | None = None) -> None:

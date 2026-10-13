@@ -298,11 +298,12 @@ async def fetch_app_page(
     *,
     buvid: str = "",
     post: AppPost | None = None,
+    page: int = 1,
 ) -> tuple[str | None, list[FetchedItem]]:
     """The first page of an account's DynSpace feed."""
     if not str(account).isdigit():
         raise FetchError("Bilibili app feed needs a numeric uid")
-    fields: dict[int, Any] = {1: int(account), 4: 8, 5: 1, 6: "space"}
+    fields: dict[int, Any] = {1: int(account), 4: 8, 5: page, 6: "space"}
     raw = await (post or _grpc_post)(
         grpc_frame(encode_message("DynSpaceReq", fields)),
         _headers(buvid.strip() or saved_buvid()),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fetch import (
@@ -25,6 +26,8 @@ async def test_fetch(tmp_path):
 
 def case_bookmarks_delay_and_errors(tmp_path):
     case_bookmarks_cap_legacy_keep_only_and_delivered_refs(tmp_path)
+    case_judged_words_survive_and_a_bad_file_is_kept(tmp_path)
+    case_catch_line_stays_on_the_bookmark(tmp_path)
     case_poll_delay()
     case_format_and_redact_fetch_errors()
 
@@ -80,6 +83,66 @@ def case_bookmarks_cap_legacy_keep_only_and_delivered_refs(tmp_path: Path):
     assert bookmarks.delivered_refs("thesportsdb", "133999", "10:next") == {"1:match"}
     bookmarks.move("thesportsdb", "Zzzfc United", "133999")
     assert bookmarks.seen_ids("thesportsdb", "133999") == {"seed"}
+
+
+def case_judged_words_survive_and_a_bad_file_is_kept(tmp_path: Path):
+    path = tmp_path / "words.json"
+    store = BookmarkStore(path)
+    store.remember("bilibili", "9", ["post"])
+    store.note_words("bilibili", "9", "post", "abc")
+    again = BookmarkStore(path)
+    assert again.words("bilibili", "9") == {"post": "abc"}
+    broken = tmp_path / "broken.json"
+    broken.write_text("{", encoding="utf-8")
+    bad = BookmarkStore(broken)
+    bad.remember("bilibili", "9", ["post"])
+    assert broken.read_text(encoding="utf-8") == "{"
+
+
+def case_catch_line_stays_on_the_bookmark(tmp_path: Path):
+    path = tmp_path / "old.json"
+    when = "2026-10-04T12:00:00+00:00"
+    later = datetime(2026, 10, 5, 12, tzinfo=timezone.utc)
+    earlier = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
+    old = {
+        "bilibili:1": {
+            "delivered": {"1001": ["1:game"]},
+            "ids": ["1001"],
+            "aliases": {"av10": "1001"},
+            "floor": "1001",
+            "since": when,
+        }
+    }
+    path.write_text(json.dumps(old))
+    store = BookmarkStore(path)
+    assert store.seen_ids("bilibili", "1") == {"1001"}
+    assert store.catch_line("bilibili", "1")[0] == 1001
+    saved = json.loads(path.read_text())["bilibili:1"]
+    assert "aliases" not in saved
+    assert saved["floor"] == "1001"
+
+    store.remember_line("bilibili", "1", "1002", later)
+    assert store.catch_line("bilibili", "1")[0] == 1001
+    store.remember("bilibili", "1", ["1002"])
+    assert "1001" in store.seen_ids("bilibili", "1")
+    assert store.delivered_refs("bilibili", "1", "1001") == {"1:game"}
+
+    store.remember("bilibili", "9", ["3"])
+    store.remember_line("bilibili", "9", "3", later)
+    store.move("bilibili", "1", "9")
+    assert store.catch_line("bilibili", "1") == (None, None)
+    assert store.catch_line("bilibili", "9")[0] == 3
+
+    store.remember("bilibili", "8", ["1"])
+    store.remember_line("bilibili", "8", "50", earlier)
+    store.remember("bilibili", "7", ["2"])
+    store.remember_line("bilibili", "7", "80", later)
+    store.move("bilibili", "7", "8")
+    assert store.catch_line("bilibili", "8")[0] == 50
+
+    assert store.keep_only([("bilibili", "8")]) == 1
+    assert store.catch_line("bilibili", "9") == (None, None)
+    assert BookmarkStore(path).catch_line("bilibili", "8")[0] == 50
 
 
 def case_poll_delay():

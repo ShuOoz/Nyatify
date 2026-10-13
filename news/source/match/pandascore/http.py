@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
@@ -250,13 +250,34 @@ class PandaScoreClient:
             "/matches/past", team, sort="-scheduled_at", per_page=str(PAST_PER_PAGE)
         )
 
-    async def team_matches(self, team: TeamRef) -> list[Match]:
-        """Running, then upcoming, then past. Dedup by match id; running wins."""
+    async def team_matches(
+        self, team: TeamRef, pinned: Sequence[str] = ()
+    ) -> list[Match]:
+        """Running, then upcoming, then past. A later list replaces a not-started row.
+
+        Pinned ids missing from those lists are looked up so an open card can finish.
+        """
         out: dict[str, Match] = {}
         for batch in (await self.running(team), await self.upcoming(team), await self.past(team)):
             for match in batch:
-                out.setdefault(match.match_id, match)
+                current = out.get(match.match_id)
+                if current is None or (
+                    current.status == "not_started" and match.status != "not_started"
+                ):
+                    out[match.match_id] = match
+        for event_id in pinned:
+            if event_id and event_id not in out:
+                found = await self._match(event_id, team)
+                if found is not None:
+                    out[found.match_id] = found
         return list(out.values())
+
+    async def _match(self, match_id: str, team: TeamRef) -> Match | None:
+        try:
+            payload = await self._json(f"/matches/{match_id}", {}, "PandaScore match")
+        except FetchError:
+            return None
+        return parse_match(payload, followed_slug=team.slug)
 
     async def resolve_team(self, account: str) -> TeamRef:
         token = " ".join(account.split())

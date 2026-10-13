@@ -144,7 +144,7 @@ async def test_check_previews(news_cog, news_store, news_guild, monkeypatch):
         ("thesportsdb", "133604", FEATURE_MATCH),
     )
     await check("133604", latest=[upcoming, done])
-    assert ctx.send.await_args.kwargs["embed"].title == "Arsenal 2–1 City"
+    assert ctx.send.await_args.kwargs["embed"].title == "Arsenal vs Liverpool"
     club = next(item for item in list_news_follows(store, GUILD_ID) if item["account"] == "133604")
     assert not club.get("fetched_at")
 

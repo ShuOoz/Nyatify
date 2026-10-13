@@ -87,12 +87,14 @@ class SportsdbClient:
         key: str,
         ttl: float = SPORTSDB_CACHE_TTL,
         monotonic: Callable[[], float] | None = None,
+        sleep: Callable[[float], Any] | None = None,
     ) -> None:
         self._get = get
         self._base = base
         self._key = key
         self._ttl = ttl
         self._monotonic = monotonic or time.monotonic
+        self._sleep = sleep or asyncio.sleep
         self._memo: dict[str, tuple[float, Any]] = {}
         self._hits: list[float] = []
         self.day_scan_cut = False
@@ -104,8 +106,7 @@ class SportsdbClient:
         if hit is not None and hit[0] > now:
             return hit[1]
         if path == "eventsday.php" and self._over_cap(now):
-            self.day_scan_cut = True
-            return None
+            now = await self._room_at(now)
         try:
             payload = load_json(await self._get(url, json_headers()), what=what)
         except FetchError:
@@ -116,6 +117,14 @@ class SportsdbClient:
         self._hits.append(now)
         self._memo[url] = (now + self._ttl, payload)
         return payload
+
+    async def _room_at(self, now: float) -> float:
+        """Wait until the minute window can take another day-board call, then continue."""
+        while self._over_cap(now):
+            wait = 60 - (now - self._hits[0])
+            await self._sleep(wait if wait > 0 else 0)
+            now = self._monotonic()
+        return now
 
     def _over_cap(self, now: float) -> bool:
         self._hits = [stamp for stamp in self._hits if now - stamp < 60]
@@ -454,3 +463,56 @@ def _team_rank(hit: TeamHit, query: str, alias: ClubAlias | None) -> tuple:
         bool(famous and alias is None and hit.sport.casefold() == "soccer"),
         min(hit.loved, 8),
     )
+
+
+def _follow_key(follow: dict[str, str]) -> tuple[str, str, str]:
+    return (follow["platform"], follow["account"], follow["topic"])
+
+
+def _club_ids(follow: dict[str, str]) -> set[str]:
+    ids = {follow["account"]} if follow["account"].isdigit() else set()
+    alias = club_alias(follow["account"]) or club_alias(follow.get("label") or "")
+    if alias is not None and alias.team_id.isdigit():
+        ids.add(alias.team_id)
+    return ids
+
+def _same_saved_club(left: dict[str, str], right: dict[str, str]) -> bool:
+    if left["platform"] != right["platform"]:
+        return False
+    if left["account"] == right["account"]:
+        return True
+    from news.source.match.thesportsdb import NAME as sports_platform
+
+    if left["platform"] != sports_platform:
+        return False
+    return bool(_club_ids(left) & _club_ids(right))
+
+def club_already_followed(
+    follows: list[dict[str, str]],
+    follow: dict[str, str],
+    *,
+    team_id: str | None = None,
+    source_name: str | None = None,
+    ignore_self: bool = False,
+) -> bool:
+    """True when another saved follow is this club, including a name learned after fetch."""
+    from news.source.match.pandascore import NAME as pandascore_platform
+    from news.source.registry import is_match_platform
+
+    resolved = (team_id or "").strip()
+    name = (source_name or "").strip().casefold()
+    added = _follow_key(follow)
+    for item in follows:
+        if ignore_self and _follow_key(item) == added:
+            continue
+        if _same_saved_club(item, follow):
+            return True
+        if not is_match_platform(follow["platform"]) or item["platform"] != follow["platform"]:
+            continue
+        names = (item["account"].casefold(), (item.get("label") or "").casefold())
+        if (resolved and item["account"] == resolved) or (
+            follow["platform"] != pandascore_platform and name and name in names
+        ):
+            return True
+    return False
+

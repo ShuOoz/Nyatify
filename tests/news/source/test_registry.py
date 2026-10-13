@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fetch import FetchError
 from news.follows import FEATURE_GAME, FEATURE_OTHER
+from news.source.post.bilibili import FETCH_FIELDS as BILI_FETCH_FIELDS
 from news.source.post.bilibili.dynamics import LIST, WATCH
 from news.source.registry import (
     FLOOD_CAP,
@@ -10,6 +11,7 @@ from news.source.registry import (
     cookie_hint,
     feed_display_name,
     feed_fault,
+    fetch_fields,
     flood_cap,
     for_model,
     hold_bookmark,
@@ -47,7 +49,8 @@ def case_display_name_hard_skip_and_card_kind():
     assert not is_hard_skip(
         item(text="互动抽奖 预下载开启，停服预计需要5个小时。")
     )
-    assert is_hard_skip(item(platform="weibo", text="转发微博 //@other: hi"))
+    assert not is_hard_skip(item(platform="weibo", text="转发微博 //@other: hi"))
+    assert is_hard_skip(item(platform="weibo", tags=("repost",)))
     assert not is_hard_skip(item(platform="weibo", text="RT @other: hi"))
     assert not is_hard_skip(item())
     assert not is_hard_skip(
@@ -107,6 +110,8 @@ def case_registry_asks_the_named_source():
     assert cookie_hint("bilibili", FetchError("HTTP 412 from api")) is None
     assert feed_fault("thesportsdb", FetchError("HTTP 403")) is None
     assert cookie_hint("weibo", FetchError("HTTP 401 from api")) == "Use `/news cookie`."
+    assert fetch_fields("BiliBili") == BILI_FETCH_FIELDS
+    assert fetch_fields("nope") == ()
 
 
 def case_shows_post_for_model_and_note_list_post_follow_the_source():

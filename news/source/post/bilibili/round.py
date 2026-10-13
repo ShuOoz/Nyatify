@@ -30,7 +30,7 @@ from datetime import datetime
 from pathlib import Path
 
 from config import BASE_DIR, settings
-from news.follows import GuildTopic, SourceKey
+from news.follows import GuildTopic, SourceKey, TICKET_BACKFILL
 from news.rounds import Poll, hold_tickets, is_due, pause_between, poll_source
 from news.source.post.bilibili import dynamics
 from news.source.post.bilibili.app import (
@@ -50,7 +50,6 @@ from news.source.post.common import (
     vetted_window,
     write_json,
 )
-from news.source.post.weibo.ticket import TICKET_BACKFILL
 
 log = logging.getLogger(__name__)
 
@@ -207,13 +206,13 @@ def plan(
     groups, ring = _groups_and_ring(
         accounts, proxies, turn, phones_per_proxy, accounts_per_phone
     )
-    quiet = set(sitting)
+    sitting = set(sitting)
     chosen: list[tuple[str, int]] = []
     spent: list[str] = []
     for proxy, index in ring:
         if len(chosen) == len(groups):
             break
-        if proxy in quiet:
+        if proxy in sitting:
             if proxy not in spent:
                 spent.append(proxy)
             continue
@@ -395,7 +394,7 @@ async def _ask_passes(run: _Run) -> tuple[int, bool]:
         run.poll.bili_stopped.clear()
         if phones:
             with failed_exits([proxy for proxy in proxies if proxy not in pool]):
-                if _login_saved():
+                if _use_login(run):
                     await _login_passes(run, phones)
                 else:
                     await _app_passes(run, phones)
@@ -405,6 +404,12 @@ async def _ask_passes(run: _Run) -> tuple[int, bool]:
         else:
             hold_tickets(run.poll, "bilibili", accounts, run.backfill_for, run.only)
     return run.posted, run.fetched
+
+
+def _use_login(run: _Run) -> bool:
+    """Login reads the first proxy. A skipped or failed first proxy uses the app passes."""
+    proxy = backup_proxy()
+    return _login_saved() and not run.skipped(proxy) and not exit_failed(proxy)
 
 
 def _login_saved() -> bool:

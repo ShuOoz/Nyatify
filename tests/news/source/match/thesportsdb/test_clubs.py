@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 
 import pytest
 
@@ -11,6 +10,7 @@ from news.source.match.thesportsdb.clubs import (
     SPORTSDB_MINUTE_CAP,
     SportsdbClient,
     TeamHit,
+    club_already_followed,
     official_club_name,
     pick_team,
     search_club_suggestions,
@@ -23,7 +23,8 @@ async def test_clubs():
     case_suggest_clubs_covers_alias_typo_and_ambiguous_nicks()
     await case_search_club_suggestions_uses_thesportsdb_and_drops_youth()
     case_pick_team_prefers_the_famous_club_or_asks_for_an_id()
-    await case_eventsday_stops_when_the_minute_cap_is_hit()
+    case_another_squad_counts_once_the_team_id_matches()
+    await case_eventsday_waits_out_the_minute_cap()
 
 def case_suggest_clubs_covers_alias_typo_and_ambiguous_nicks():
     clubs._club_aliases = None
@@ -152,21 +153,27 @@ def case_pick_team_prefers_the_famous_club_or_asks_for_an_id():
         pick_team([TeamHit("1", "A"), TeamHit("2", "B")], "x")
 
 
-async def case_eventsday_stops_when_the_minute_cap_is_hit():
+async def case_eventsday_waits_out_the_minute_cap():
     calls: list[str] = []
+    clock = {"t": 1_000.0}
 
     async def get(url: str, _headers):
         calls.append(url)
         return "{}"
 
-    client = SportsdbClient(get, base="http://sportsdb.test", key="k")
-    client._hits = [time.monotonic()] * SPORTSDB_MINUTE_CAP
-    assert (
-        await client.json("eventsday.php", {"d": "2026-09-08", "l": "4480"}, "Day")
-        is None
+    async def sleep(seconds: float) -> None:
+        clock["t"] += seconds
+
+    client = SportsdbClient(
+        get, base="http://sportsdb.test", key="k",
+        monotonic=lambda: clock["t"], sleep=sleep,
     )
-    assert client.day_scan_cut is True
-    assert calls == []
+    client._hits = [clock["t"]] * SPORTSDB_MINUTE_CAP
+    payload = await client.json("eventsday.php", {"d": "2026-09-08", "l": "4480"}, "Day")
+    assert payload == {}
+    assert client.day_scan_cut is False
+    assert calls
+    calls.clear()
     payload = await client.json("eventsnext.php", {"id": "1"}, "Next")
     assert payload == {}
     assert calls
@@ -183,3 +190,35 @@ async def case_eventsday_stops_when_the_minute_cap_is_hit():
     assert failing.day_scan_cut is True
     with pytest.raises(FetchError, match="HTTP 500"):
         await failing.json("eventsnext.php", {"id": "1"}, "Next")
+
+
+def case_another_squad_counts_once_the_team_id_matches():
+    saved = [
+        {
+            "platform": "pandascore",
+            "account": slug,
+            "topic": "match",
+            "label": "Bilibili Gaming",
+        }
+        for slug in (
+            "bilibili-gaming-lol",
+            "bilibili-gaming-valorant",
+            "bilibili-gaming-cs-go",
+            "bilibili-gaming-dota-2",
+        )
+    ]
+    latest = saved[-1]
+    assert club_already_followed(
+        saved,
+        latest,
+        team_id=latest["account"],
+        source_name="Bilibili Gaming",
+        ignore_self=True,
+    ) is False
+    typed = {"platform": "pandascore", "account": "BLG", "topic": "match", "label": ""}
+    assert club_already_followed(
+        saved,
+        typed,
+        team_id="bilibili-gaming-lol",
+        source_name="Bilibili Gaming",
+    ) is True

@@ -42,6 +42,13 @@ def source_named(platform: str) -> Any | None:
     return _by_name().get(platform.strip().lower())
 
 
+def fetch_fields(platform: str) -> tuple[tuple[str, str], ...]:
+    """Kwarg name and fetcher attribute for this platform's fetch_items."""
+    source = source_named(platform)
+    fields = getattr(source, "FETCH_FIELDS", ()) if source is not None else ()
+    return tuple(fields)
+
+
 def card_kind(item: FetchedItem | str) -> str:
     platform = item if isinstance(item, str) else item.platform
     source = source_named(platform)

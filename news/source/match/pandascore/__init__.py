@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -23,6 +23,7 @@ NAME = "pandascore"
 NAMES = frozenset({NAME})
 ADD_EXAMPLE = "a team name"
 CARD_KIND = "match"
+FETCH_FIELDS = (("token", "pandascore_token"), ("link_cache_path", "link_cache_path"))
 _Get = Callable[[str, dict[str, str] | None], Any]
 
 
@@ -59,12 +60,13 @@ async def search_accounts(
 async def fetch_items(
     account: str, *, get: _Get, now: Callable[[], datetime] | None = None,
     token: str | None = None, link_cache: LinkCache | None = None,
-    link_cache_path: Path | None = None, **_kwargs: object,
+    link_cache_path: Path | None = None, pinned_events: Sequence[str] | None = None,
+    **_kwargs: object,
 ) -> tuple[str | None, list[FetchedItem], str, str, bool]:
     stamp = (now or (lambda: datetime.now(timezone.utc)))()
     client = PandaScoreClient(get, token=token)
     hit = await client.resolve_team(account)
-    matches = await client.team_matches(hit)
+    matches = await client.team_matches(hit, pinned_events or ())
     cache = link_cache or LinkCache(link_cache_path or DEFAULT_LINK_CACHE)
     urls: dict[str, str] = {}
     for match in matches:

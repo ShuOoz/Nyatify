@@ -12,9 +12,9 @@ from fetch import json_rows
 from news.source.match.common import (
     END_TAG,
     NEXT_TAG,
+    PREVIEW_BEFORE,
     SKIP_TAG,
     START_TAG,
-    in_play,
     live_cap,
     parse_iso,
     status_key,
@@ -138,9 +138,7 @@ def prefer_match_state(
     existing_rank = PHASE_RANK.get(existing.phase, 1)
     if incoming_rank != existing_rank:
         return incoming if incoming_rank > existing_rank else existing
-    incoming_scored = bool(incoming.home_score and incoming.away_score)
-    existing_scored = bool(existing.home_score and existing.away_score)
-    if incoming_scored and not existing_scored:
+    if incoming.home_score and incoming.away_score:
         return incoming
     return existing
 
@@ -177,8 +175,9 @@ def _tba_clock(value: str) -> bool:
 
 
 def parse_kickoff(raw: Mapping[str, Any]) -> datetime | None:
+    """A timestamp is the kickoff, including midnight. 00:00:00 is unknown only on strTime."""
     stamp = _field(raw, "strTimestamp")
-    if stamp and not _tba_clock(stamp):
+    if stamp:
         parsed = parse_iso(stamp)
         if parsed is not None:
             return parsed
@@ -228,9 +227,8 @@ def parse_sportsdb_event(raw: Mapping[str, Any]) -> MatchState | None:
 def _card_kind(state: MatchState, now: datetime) -> str | None:
     """Skip, Over, On, or Kickoff from phase + kickoff.
 
-    Past the live cap a card is Over, even if the API never left scheduled.
-    Live from the API is On during the preview/play window, or with no kickoff.
-    After kickoff, still inside the cap, the clock can turn Kickoff into On.
+    The live cap ends a card only when the API never left scheduled.
+    Live stays On from six hours before kickoff, with no kickoff, and past the cap.
     """
     if not state.match_id or not (state.home or state.away):
         return None
@@ -239,12 +237,12 @@ def _card_kind(state: MatchState, now: datetime) -> str | None:
     if state.phase == "finished":
         return END_TAG
     kickoff = state.kickoff
+    if state.phase == "live":
+        if kickoff is None or kickoff - PREVIEW_BEFORE <= now:
+            return START_TAG
+        return NEXT_TAG
     if kickoff is not None and now > kickoff + live_cap(state.sport):
         return END_TAG
-    if state.phase == "live" and (
-        kickoff is None or in_play(kickoff, now, state.sport)
-    ):
-        return START_TAG
     if kickoff is not None and kickoff <= now:
         return START_TAG
     return NEXT_TAG
@@ -338,7 +336,7 @@ async def _fill_result_gap(
     league_id: str,
     now: datetime,
 ) -> None:
-    """Newest club-league days before the scan window. A cut does not fail the scan."""
+    """Newest club-league days before the scan window. A failed day does not fail the scan."""
     league = league_id.strip()
     if not league.isdigit():
         return
@@ -375,11 +373,7 @@ async def _fill_cup_days(
     league_id: str,
     now: datetime,
 ) -> None:
-    """National cup near today. A cut does not fail the scan.
-
-    Runs after the result gap so a stale last-result search keeps its requests.
-    Today is first, so the one spare request still sees a cup tie being played.
-    """
+    """National cup near today, today first. A failed day stops this fill and leaves the scan intact."""
     cup = _CUP_BY_LEAGUE.get(league_id.strip(), "")
     if not cup or client.day_scan_cut:
         return

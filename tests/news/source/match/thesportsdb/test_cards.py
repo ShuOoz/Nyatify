@@ -112,7 +112,7 @@ def test_match_cards_preview_on_and_full_time():
         account="133604",
         now=datetime(2026, 9, 5, 20, 0, tzinfo=timezone.utc),
     )
-    assert stale_live[0].item_id == "12:end"
+    assert stale_live[0].item_id == "12:start"
     skewed = match_items(
         [match_state("13", phase="live", kickoff=now + timedelta(hours=3))],
         account="133604",

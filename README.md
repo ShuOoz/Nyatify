@@ -1,106 +1,223 @@
+<div align="center">
+
+<img src="image/nyatify_icon.png" alt="Nyatify" width="120"/>
+
 # Nyatify
 
-A Discord bot that announces when someone starts an empty voice (or stage) channel. Features load as independent cogs, so you can run everything or isolate one function.
+**A Discord bot that lets you and your friends feel more connected**
 
-## What it does
+<p>
+  <a href="https://www.python.org/downloads/"><img alt="Python 3.11+" src="image/docs_image/badge-python.png" /></a>
+  <a href="https://github.com/Rapptz/discord.py"><img alt="discord.py 2.3+" src="image/docs_image/badge-discord.png" /></a>
+  <a href="https://docs.pytest.org/"><img alt="pytest tested" src="image/docs_image/badge-pytest.png" /></a>
+</p>
 
-When the first human joins an empty voice or stage channel, Nyatify posts an `@everyone` ping and then a silent embed card. The ping is its own message so phone and in-app alerts stay plain text; the card keeps a clickable channel and a live start time. Both are removed when that person leaves voice or goes AFK, or after 15 minutes. A short reconnect window ignores leave-and-rejoin spam.
+<a href="https://techforpalestine.org/learn-more"><img alt="Ceasefire Now" src="image/docs_image/badge-ceasefire.png" /></a>
 
-Bots joining a room do not trigger a notice. AFK channels are ignored.
+<a href="https://ko-fi.com/shuoy" target="_blank"><img height="48" src="image/docs_image/kofi.png" alt="Buy Me a Coffee at ko-fi.com" /></a>
 
-It can also post **game** / **ticket** / **other** cards from Bilibili or Weibo (the bot talks to both sites) and **match** cards from TheSportsDB. `/news add` asks for a **platform** first, then an account: pick TheSportsDB and type a club (nicknames and typos like `los angelos` suggest `Los Angeles Lakers · Basketball`). Club follows go to the **match** topic. Bilibili / Weibo stay **unassigned** until `/news feature` sets game, ticket, or other. Each fixture is **one Discord card** in three stages: preview (starting 6 hours before kickoff), match on (live score when known), then full time. The body is status, league · home, then kickoff time / period / recap. The card is deleted a day and a half after the result. Kickoff is Discord local time plus a relative countdown. The card links to the ESPN match page when that fixture is on ESPN’s scoreboard for the same day; otherwise it uses the TheSportsDB event page.
+English | [简体中文](README.CN.md)
 
-## Setup
+</div>
 
-1. Create a bot application in the [Discord Developer Portal](https://discord.com/developers/applications).
-2. Enable these **Privileged Gateway Intents**: **Server Members** and **Message Content** (Message Content is only needed for `!ping`). Voice notifications also need the **Voice State** intent.
-3. Invite the bot with permission to send messages (and mention `@everyone` if you want the default ping) in the channel you will use for announcements.
-4. Copy `config.example.txt` to `config.txt` and set `DISCORD_TOKEN`. Environment variables override the file. `config.txt` is gitignored and should not be committed.
+## ✨ Introduction
 
-```text
-DISCORD_TOKEN=your_bot_token_here
-COMMAND_PREFIX=!
-LOG_LEVEL=INFO
-# Empty loads every cog. Example: voice
-ENABLED_COGS=
-# Server ID for instant /commands in that server only. Empty syncs globally (can take up to an hour).
-SYNC_GUILD_ID=
-# Empty: mint a Sina visitor SUB on first poll. Or paste SUB from m.weibo.cn.
-WEIBO_COOKIES=
-# Chat model host. Empty URL or model = no AI; news cards use the original excerpt.
-# Full chat URL. Example: OpenAI https://api.openai.com/v1/chat/completions
-# Background fetch. Match cards and Bilibili/Weibo posts are separate.
-# Poll skips AI unless AI_ON_POLL=1 and a model is configured.
-NEWS_POLL_MATCH=1
-NEWS_POLL_POST=1
-AI_API_KEY=
-AI_BASE_URL=
-AI_MODEL=
-AI_ON_POLL=0
+Nyatify is a Discord bot for voice announcements and followed posts.
+
+<br>
+
+- 🔊 **Voice**: A message when someone starts an empty voice or stage channel.
+- 🏆 **Match**: Follow a sports club or an esports team.
+- 🎫 **Game, ticket, and other**: Subscribe to a **Bilibili** or **Weibo** account under a topic.
+
+## 🚀 Installation
+
+**📋 Requirement:**
+
+- Python 3.11+
+- Docker
+
+**1️⃣ Clone the repository:**
+
+```bash
+git clone https://github.com/ShuOoz/Nyatify.git
+cd Nyatify
 ```
 
-Python 3.11+ is recommended (the Docker image uses 3.11).
+**2️⃣ Install dependencies:**
+
+With Python:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python nyatify.py
 ```
 
-Or with Docker:
+With Docker:
 
 ```bash
 docker build -t nyatify .
 docker run --rm -e DISCORD_TOKEN=your_bot_token_here nyatify
 ```
 
-`/news add` takes a `space.bilibili.com` link or uid for Bilibili. Weibo takes a numeric uid: `weibo.com/u/…`, `m.weibo.cn/u/…`, or the number itself. A custom path such as `weibo.com/rmrb` needs the numeric id (`$CONFIG.oid` on the desktop profile).
+**3️⃣ Configure environment:**
 
-Leave `/news cookie` empty to show status. Cookie values stay in `config.txt`. Put Bilibili's `ac_time_value` (localStorage on `https://www.bilibili.com`) on the end of **login**. Delete `BILI_COOKIE` or `WEIBO_COOKIES` to go back to a guest session. Sign out of the Bilibili website before the bot refreshes that login.
+[🎮 Create a bot in the Discord Developer Portal.](https://discord.com/developers/applications)
 
-`NEWS_POLL_MATCH` and `NEWS_POLL_POST` enable background fetch (both on in `config.example.txt`). A Bilibili or Weibo follow waits until `/news feature` sets a topic. `/news add` says when poll is off. `/news check` previews a recent post or the club's next game and does not post. Background cards keep the original excerpt unless `AI_ON_POLL=1` and a model is configured.
+**a.** On the Bot page, enable Server Members Intent and Message Content Intent.
 
-Per-server settings are stored under `data/` (`guild.json` and announcement notice state). That directory is gitignored, except `data/sports_aliases.json` (club nicknames) and `data/esports_aliases.json` (team nicknames).
+**b.** On OAuth2 or Guild Install, check `bot` and `applications.commands`.
 
-## Commands
+**c.** Bot Permissions: Send Messages, Embed Links, Attach Files, Mention Everyone.
 
-`!ping` is the only prefix command (`COMMAND_PREFIX`, default `!`). Everything else is slash-only. Commands work in a server, not in DMs.
+**d.** Use the Generated URL in the portal to install the bot.
 
-| Command | Who | What |
-| --- | --- | --- |
-| `/ping` or `!ping` | Anyone in the server | Check that the bot is online |
-| `/announce show` | Manage Server | Show each function’s announcement channel (voice first, other last) |
-| `/announce feature` | Manage Server | Default channel for every announcement |
-| `/announce feature` with a function | Manage Server | Channel for one announcement function (`voice`, `game`, `ticket`, `match`, `other`) |
-| `/news add` | Manage Server | Follow by platform, then account (`thesportsdb`, `bilibili`, `weibo`). TheSportsDB clubs go to `match`. Bilibili / Weibo stay unassigned until `/news feature` |
-| `/news feature` | Manage Server | Set a followed account’s topic. Account first, then topic (`game`, `ticket`, `other`, or `match` for clubs) |
-| `/news delete` | Manage Server | Unfollow a news account |
-| `/news show` | Anyone in the server | Show followed accounts grouped by topic |
-| `/news check` | Anyone in the server, while `/admin` has shown it | Preview a recent post, or a club's next game; does not post, and is not a replay of the next poll |
-| `/admin` | Anyone in the server with `ADMIN_PASSWORD` | Show the owner commands below. Leave the password empty to hide them. A restart hides them too. With `SYNC_GUILD_ID`, that server’s list updates immediately |
-| `/news cookie` | Bot owner, while `/admin` has shown it | Empty shows Bilibili and Weibo cookie status. Otherwise **platform** is `Bilibili` or `Weibo` and **login** is the Cookie header |
-| `/cogs`, `/load`, `/unload`, `/reload` | Bot owner, while `/admin` has shown them | List or hot-load cogs |
+**4️⃣ Start the bot:**
 
-`/admin` replies only to the person who ran it. The owner commands still require the bot owner.
+```bash
+python nyatify.py
+```
 
-`announce` and `notice` (shared delivery) are not cogs. Reload a cog such as `voice`; restart the bot to pick up `announce.py` or `notice.py` changes.
-
-## Functions
-
-Each `.py` file in `cogs/` (except names starting with `_`) is loaded as a discord.py extension.
-
-| Cog | Role |
-| --- | --- |
-| `admin` | Owner cog management and per-server announce channels |
-| `voice` | Voice/stage start notices (`cogs/voice_notify.py`) |
-| `news` | Game/ticket/other feed cards (`cogs/news_notify.py`); TheSportsDB match card (preview → live → full time); Bilibili and Weibo in-process; optional AI filter and summary |
-
-To add a notify function, subclass `announce.NotifyCog`, set `feature`, and post with `send_announcement`. To skip a file without deleting it, prefix the name with `_`.
-
-## Tests
+**🧪 Tests:**
 
 ```bash
 pip install -r requirements-dev.txt
 pytest
 ```
+
+## ⚙️ Configuration
+
+Nyatify reads `config.txt`. Copy `config.example.txt` to `config.txt` and set `DISCORD_TOKEN`.
+
+### 🔐 Discord
+
+```bash
+# The quoted text is an example of what to type.
+# In config.txt, write the value without quotes.
+# Token from the Discord Developer Portal.
+DISCORD_TOKEN="YOUR_BOT_TOKEN_HERE"
+
+COMMAND_PREFIX="!"
+LOG_LEVEL="INFO"
+ENABLED_COGS="voice"  # Empty loads every cog.
+
+# Server ID. Empty syncs every server, which can take up to an hour.
+SYNC_GUILD_ID="123456789012345678"
+
+# Empty hides /admin. A restart hides the owner commands too.
+ADMIN_PASSWORD="YOUR_PASSWORD"
+```
+
+### 🏆 Match
+
+```bash
+NEWS_POLL_MATCH="1"
+THESPORTSDB_KEY="YOUR_THESPORTSDB_KEY"    # Empty uses the free test key.
+PANDASCORE_TOKEN="YOUR_PANDASCORE_TOKEN"  # Empty skips PandaScore.
+```
+
+### 🎫 Bilibili and Weibo
+
+```bash
+NEWS_POLL_POST="1"
+
+# Cookie header from bilibili.com. Empty keeps a guest session.
+BILI_COOKIE="SESSDATA=...; bili_jct=...; DedeUserID=123"
+
+# ac_time_value from localStorage on bilibili.com.
+BILI_AC_TIME="YOUR_AC_TIME_VALUE"
+
+BILI_COOKIE_UID="0"                 # 0 means no Bilibili login is saved.
+WEIBO_COOKIES="SUB=YOUR_WEIBO_SUB"  # Empty mints a guest SUB on the next poll.
+```
+
+### 🌐 Proxies
+
+```bash
+BILI_PROXY="http://127.0.0.1:7890,http://127.0.0.1:7891"  # Empty connects directly.
+
+# Empty connects directly. A guest stays on the proxy that created it.
+WEIBO_PROXY="http://127.0.0.1:7890"
+
+AI_PROXY="http://127.0.0.1:7890"  # Empty connects directly.
+BILI_PHONES_PER_PROXY="1"
+BILI_ACCOUNTS_PER_PHONE="2"
+IP_CHECK="1"  # 0 skips the exit-IP check.
+```
+
+### 🤖 AI
+
+```bash
+AI_API_KEY="YOUR_AI_API_KEY"  # Empty key, URL, or model means no AI.
+
+# Full chat URL, not the site root.
+AI_BASE_URL="https://api.deepseek.com/chat/completions"
+
+AI_MODEL="deepseek-flash"
+AI_ON_POLL="0"  # 1 runs the model on background polls.
+```
+
+## 🧩 Cogs
+
+[Voice](docs/voice.md) and [News](docs/news.md) have their own pages for how they work and their commands.
+
+| Cog | Role |
+| --- | --- |
+| 🔐 Admin | Owner cog management and per-server announce channels. |
+| 🔊 Voice | Voice and stage start notices. |
+| 📰 News | Match cards, plus Bilibili and Weibo posts. |
+
+Shared commands and owner commands are listed here.
+
+| Command | Description |
+| --- | --- |
+| `!ping` | Check that the bot is online. |
+| `/announce show` | Show announcement channels for this server. |
+| `/announce feature` | Set the announcement channel for this server. |
+| `/admin` | Show or hide the owner commands. |
+| `/cogs` | List loaded and available cogs. Owner only. |
+| `/load` | Load one cog without restarting the bot. Owner only. |
+| `/unload` | Unload one cog without restarting the bot. Owner only. |
+| `/reload` | Reload one cog without restarting the bot. Owner only. |
+
+## ⚠️ Limitation
+
+🔐 **Admin**
+
+- 🙈 **Owner commands**: Stay hidden until `/admin`. A restart hides them again.
+- 🔒 **Unload**: The admin cog cannot be unloaded.
+- 💬 **Direct messages**: Commands run in a server, not in a direct message.
+
+🔊 **Voice**
+
+- 🚪 **Empty channel**: A notice starts only when a person joins an empty voice or stage channel.
+- 🤖 **Bots and AFK**: Bots do not start a notice, and the AFK channel is ignored.
+- ⏱️ **One notice**: The message is removed after 15 minutes, or when they leave or go AFK.
+
+📰 **News**
+
+- 🎫 **Posts**: <u>Bilibili and Weibo only.</u>
+- 🔇 **Topic**: The topic is fixed by default; customize the filter and the rest.
+- 🕐 **Kickoff**: A match card appears from 6 hours before kickoff, and not before that.
+- 📅 **Quiet days**: With no match in that window, the match poll checks about once a day.
+- 🗑️ **Full time**: The match card is removed a day and a half after full time.
+
+## 🙏 Special Thanks
+
+These are the people and projects that helped me a lot while building this bot.
+
+[DIYgod](https://github.com/DIYgod), [dataabc](https://github.com/dataabc), [SocialSisterYi](https://github.com/SocialSisterYi), [Nemo2011](https://github.com/Nemo2011)
+
+- [RSSHub](https://github.com/DIYgod/RSSHub): Feeds from many sites, including Bilibili and Weibo.
+- [weibo-crawler](https://github.com/dataabc/weibo-crawler): A Python crawler for Sina Weibo.
+
+🙇‍♂️🙇‍♂️🙇‍♂️ Big Thanks to [Cursor](https://cursor.com) 🙇‍♂️🙇‍♂️🙇‍♂️
+
+## 📝 Disclaimer
+
+Nyatify is a personal project for **learning and practice**. Use it within the **terms** of the services it reads.
+
+Do not place **excessive load** on Bilibili, Weibo, or the match providers.
+
+Do not send notices to people who have **not requested** them.

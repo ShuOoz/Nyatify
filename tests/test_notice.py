@@ -135,6 +135,13 @@ async def case_notices_track_survive_restart_and_drop_unavailable(tmp_path):
     notices.drop_unavailable(bot)
     assert notices.live(NEWS, 1, "gone") is None
     assert notices.live(NEWS, 2, "keep") is not None
+    offline = fake_guild(3)
+    offline.unavailable = True
+    offline.get_channel.return_value = None
+    bot.guilds = [keep, offline]
+    notices.track(NEWS, 3, "outage", kept, ttl=60)
+    notices.drop_unavailable(bot)
+    assert notices.live(NEWS, 3, "outage") is not None
 
 async def test_the_purge_loop_and_failed_deletes(tmp_path):
     await case_notices_store_and_purge_loop_are_shared(scratch(tmp_path, "notices_store_and_purge_loop_are_shared"))
@@ -149,7 +156,7 @@ async def case_notices_store_and_purge_loop_are_shared(tmp_path):
     notices = _notices(tmp_path)
     notices.start()
     notices.start()
-    assert notices._loop_users == 2
+    assert notices._cogs == 2
     notices.stop()
     assert notices._purge.is_running()
     notices.stop()

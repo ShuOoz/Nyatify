@@ -1,7 +1,7 @@
 """Weibo mblog cards: getIndex JSON to FetchedItem.
 
 GET /api/container/getIndex?containerid=230413{uid} on the warmed m.weibo.cn
-session. First page only. card_type 9 is an mblog; 11 unwraps a group.
+session. Pages walk until a bookmark or a short page. card_type 9 is an mblog; 11 unwraps a group.
 A pinned card (`isTop` or a 置顶 title) is placed after the regular timeline.
 The same post already in that timeline stays there and is not repeated.
 Missing `data` retries on the same session. Guest SUB from genvisitor2 is enough for public accounts. Login SUB is optional.
@@ -16,7 +16,7 @@ from __future__ import annotations
 import html
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -39,8 +39,8 @@ _BREAK = re.compile(r"(?i)<br\s*/?>|</p>")
 log = logging.getLogger(__name__)
 
 
-def index_params(account: str) -> dict[str, str]:
-    return {"containerid": f"{_CONTAINER}{account}", "page": "1"}
+def index_params(account: str, *, page: int = 1) -> dict[str, str]:
+    return {"containerid": f"{_CONTAINER}{account}", "page": str(page)}
 
 
 def items_from_index(
@@ -81,7 +81,8 @@ def mblog_item(
         return None
     text = _plain(mblog.get("text") or "")
     orig = mblog.get("retweeted_status")
-    if isinstance(orig, dict) and (orig.get("id") or orig.get("text")):
+    repost = isinstance(orig, dict) and bool(orig.get("id") or orig.get("text"))
+    if repost:
         text = _forward_text(text, orig)
     author = _user_name(mblog) or source_name
     heading = text.split("\n", 1)[0].strip() if text else (author or "")
@@ -101,6 +102,7 @@ def mblog_item(
         image_width=width,
         image_height=height,
         author_icon=_user_icon(mblog),
+        tags=("repost",) if repost else (),
     )
 
 
@@ -109,10 +111,38 @@ async def fetch_mblogs(
     *,
     cookie: str = "",
     call: Any | None = None,
+    seen: Collection[str] = (),
 ) -> tuple[str | None, list[FetchedItem], str, str]:
-    """Latest mblogs for uid `account`. `call` is weibo_json-compatible."""
+    """Latest mblogs, then older pages until one overlaps a bookmark."""
+    seen_ids = {str(item) for item in seen if item}
+    name = None
+    certification = bio = ""
+    got: list[FetchedItem] = []
+    have: set[str] = set()
+    full = 0
+    for page in range(1, 9):
+        page_name, items, certification, bio = await _index_page(
+            account, cookie=cookie, call=call, page=page
+        )
+        name = name or page_name
+        fresh = [item for item in items if item.item_id not in have]
+        if not fresh:
+            break
+        got.extend(fresh)
+        have.update(item.item_id for item in fresh)
+        overlapped = any(item.item_id in seen_ids for item in items)
+        if not seen_ids or overlapped or (full and len(fresh) < full):
+            break
+        full = len(fresh)
+    return name, got, certification, bio
+
+
+async def _index_page(
+    account: str, *, cookie: str, call: Any | None, page: int,
+) -> tuple[str | None, list[FetchedItem], str, str]:
+    """One getIndex page. `call` is weibo_json-compatible."""
     do = call or weibo_json
-    params = index_params(account)
+    params = index_params(account, page=page)
     last: FetchError | None = None
     for attempt in range(_DATA_TRIES):
         payload = await do("GET", WEIBO_INDEX_URL, params=params, cookie=cookie)

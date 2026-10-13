@@ -3,21 +3,112 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from ai import AI, AIError
-from fetch import FetchedItem, format_fetched_item
-from news.cards import _json_object, match_recap_notes, parse_title_summary
+from fetch import FetchedItem, excerpt, format_fetched_item
+from news.cards import TITLE_CHARS, _fold_summary, _game_card_body, match_recap_notes
 from news.follows import FEATURE_GAME, FEATURE_TICKET
 from news.prompt import FILTER_PROMPT, MATCH_WRITE_PROMPT, WRITE_PROMPT
 from news.source.match.common import is_match_item
 from news.source.post.weibo.ticket import TicketDraft, parse_ticket_draft
 from news.source.registry import for_model, uses_ai
+
+
+
+def _json_object(text: str) -> dict[str, Any] | None:
+    blob = text.strip()
+    if blob.startswith("```"):
+        blob = re.sub(r"^```(?:json)?\s*", "", blob, count=1)
+        blob = re.sub(r"\s*```$", "", blob).strip()
+    start, end = blob.find("{"), blob.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        data = json.loads(blob[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+def parse_title_summary(text: str) -> tuple[str, str] | None:
+    data = _json_object(text)
+    if data is None or not isinstance(data.get("title"), str):
+        return None
+    title = excerpt(" ".join(data["title"].split()), TITLE_CHARS)
+    if isinstance(data.get("about"), str):
+        summary = _game_card_body(data)
+    else:
+        raw = data.get("summary")
+        if not isinstance(raw, str):
+            return None
+        summary = _fold_summary(raw)
+    return (title, summary) if summary else None
+
+STREAM_FP_PREFIX = "stream:"
+_CN = timezone(timedelta(hours=8))
+_CLOCK = re.compile(
+    r"(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日"
+    r"[^\d]{0,8}(\d{1,2})\s*[:：]\s*(\d{2})"
+)
+
+
+def stream_when(quote: str, posted: datetime | None = None) -> datetime | None:
+    """Watch clock in China time, copied from a fact quote."""
+    match = _CLOCK.search(quote)
+    if match is None:
+        return None
+    year_s, month, day, hour, minute = match.groups()
+    posted_cn = (posted or datetime.now(timezone.utc)).astimezone(_CN)
+    year = _show_year(year_s, month, day, posted_cn)
+    try:
+        return datetime(year, int(month), int(day), int(hour), int(minute), tzinfo=_CN)
+    except ValueError:
+        return None
+
+
+def _show_year(year_s: str | None, month: str, day: str, posted: datetime) -> int:
+    """A month and day with no year is this year, or next year once that day has passed."""
+    if year_s:
+        return int(year_s)
+    year = posted.year
+    try:
+        shown = datetime(year, int(month), int(day), tzinfo=posted.tzinfo).date()
+    except ValueError:
+        return year
+    if shown < posted.date():
+        return year + 1
+    return year
+
+
+def stream_fingerprint(
+    quotes: dict[str, str],
+    occurred_at: datetime | None,
+    *,
+    keep: bool,
+    kind: str,
+    watch: str = "",
+) -> str | None:
+    """Same watch clock, posted before the show day. A reservation clock wins."""
+    if not keep or kind != "stream":
+        return None
+    quoted = next((text for text in quotes.values() if stream_when(text, occurred_at)), "")
+    quote = watch if watch and stream_when(watch, occurred_at) else quoted
+    clock = stream_when(quote, occurred_at) if quote else None
+    if clock is None or occurred_at is None:
+        return None
+    if occurred_at.astimezone(_CN).date() >= clock.date():
+        return None
+    return (
+        f"{STREAM_FP_PREFIX}{clock.year}-{clock.month}-{clock.day}-"
+        f"{clock.hour:02d}:{clock.minute:02d}"
+    )
 
 log = logging.getLogger(__name__)
 

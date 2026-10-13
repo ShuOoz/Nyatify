@@ -66,7 +66,6 @@ def fresh_post(cog, store, guild, channel) -> None:
     cog.notices._posts.clear()
     cog.notices.save()
     cog._sending.clear()
-    cog._decided.clear()
     cog._filter_cache.clear()
     cog._write_cache.clear()
     cog._seen_live.clear()

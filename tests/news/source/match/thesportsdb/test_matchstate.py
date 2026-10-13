@@ -34,10 +34,11 @@ def case_parse_kickoff_and_day_scan():
         {"dateEvent": "2026-09-05"},
         {"dateEvent": "2026-09-05", "strTime": ""},
         {"dateEvent": "2026-09-05", "strTime": "00:00:00"},
-        {"strTimestamp": "2026-09-05T00:00:00+00:00"},
-        {"strTimestamp": "2026-09-05T00:00:00Z"},
     ):
         assert parse_kickoff(raw) is None
+    midnight = datetime(2026, 9, 5, 0, 0, tzinfo=timezone.utc)
+    assert parse_kickoff({"strTimestamp": "2026-09-05T00:00:00+00:00"}) == midnight
+    assert parse_kickoff({"strTimestamp": "2026-09-05T00:00:00Z"}) == midnight
     now = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
     days = scan_days(now)
     assert days[0] == "2026-09-06"
@@ -104,6 +105,9 @@ def case_classify_phase_and_prefer_the_later_stage():
     assert prefer_match_state(fixture, called_off).phase == "skip"
     assert prefer_match_state(called_off, fixture).phase == "skip"
     assert prefer_match_state(called_off, result).phase == "finished"
+    nil = match_state("99", phase="live", home_score="0", away_score="0", kickoff=now)
+    scored = match_state("99", phase="live", home_score="1", away_score="0", kickoff=now)
+    assert prefer_match_state(nil, scored).home_score == "1"
 
 
 def case_period_label_and_event_rows():
@@ -140,7 +144,7 @@ def case_period_label_and_event_rows():
     tba = dict(raw, strTimestamp="2026-09-05T00:00:00Z", strSport="null")
     undated = parse_sportsdb_event(tba)
     assert undated is not None
-    assert undated.kickoff is None
+    assert undated.kickoff == datetime(2026, 9, 5, 0, 0, tzinfo=timezone.utc)
     assert undated.sport == "sport"
     rows = parse_sportsdb_events(
         {"events": [raw, raw, {"idEvent": "x"}], "results": [{"idEvent": "2", "strAwayTeam": "City"}]}

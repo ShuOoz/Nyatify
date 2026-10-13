@@ -25,7 +25,6 @@ from news.drafts import card_fields, filter_kept, keep_post
 from news.follows import (
     FEATURE_TICKET,
     TOPIC_UNASSIGNED,
-    block_live_room,
     follow_display_name,
     follow_shown_name,
     remember_source,
@@ -35,6 +34,7 @@ from news.follows import (
 from news.source.post.bilibili import (
     VISITOR_COOKIE_UID,
     bili_cookie_uid,
+    block_live_room,
     cookie_effective as bili_cookie_effective,
     is_bili_login_cookie,
 )
@@ -44,6 +44,8 @@ from news.source.post.weibo import (
     is_weibo_visitor_cookie,
 )
 from news.source.post.weibo.ticket import DAMAI_WEIBO, TicketDraft, one_artist, simplified
+HIDDEN_COMMANDS = ("cookie", "check")
+
 from news.source.registry import (
     FETCH_PLATFORMS,
     PLATFORM_LABELS,
@@ -151,7 +153,7 @@ class TestCommands:
 
     @news.command(
         name="check",
-        description="Test preview of a recent post or latest match",
+        description="Test preview of a recent post or the next game",
     )
     @app_commands.describe(
         account="Followed account to preview (name or uid). This is not a cookie uid",

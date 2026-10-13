@@ -40,8 +40,6 @@ _CAP_ALIAS = {"football": "american football", "hockey": "ice hockey"}
 _STAGE_TAGS = {MATCH_TAG, START_TAG, END_TAG, NEXT_TAG, SKIP_TAG}
 _ROLE_TAGS = (START_TAG, NEXT_TAG, END_TAG, SKIP_TAG)
 _PREVIEW_ROLES = ("live", "preview", "skip", "result", "later")
-# /news check. True: next kickoff. False: most recent result. Flip by hand.
-CHECK_FORWARD = False
 
 
 def is_match_item(item: FetchedItem) -> bool:
@@ -143,10 +141,6 @@ def live_cap(sport: str = "") -> timedelta:
     """How long to treat a match as on if the API never says finished."""
     key = _CAP_ALIAS.get(sport.strip().casefold(), sport.strip().casefold())
     return _LIVE_CAP.get(key, _LIVE_CAP_DEFAULT)
-
-
-def in_play(kickoff: datetime, now: datetime, sport: str = "") -> bool:
-    return kickoff - PREVIEW_BEFORE <= now <= kickoff + live_cap(sport)
 
 
 def _aware(stamp: datetime) -> datetime:
@@ -295,37 +289,11 @@ def pick_next_match(
     return matches[0] if matches else None
 
 
-def pick_latest_match(
-    items: list[FetchedItem], *, now: datetime | None = None
-) -> FetchedItem | None:
-    """The game that has started most recently, or the next kickoff if none have."""
-    stamp = now or datetime.now(timezone.utc)
-    matches = [item for item in items if is_match_item(item)]
-    live = [item for item in matches if START_TAG in item.tags]
-    if live:
-        return max(live, key=_soonest)
-    started = [
-        item
-        for item in matches
-        if item.occurred_at is not None and item.occurred_at <= stamp
-    ]
-    if started:
-        return max(started, key=_soonest)
-    ended = [item for item in matches if END_TAG in item.tags]
-    if ended:
-        return max(ended, key=_soonest)
-    upcoming = [item for item in matches if NEXT_TAG in item.tags]
-    if upcoming:
-        return min(upcoming, key=_soonest)
-    return matches[0] if matches else None
-
-
 def pick_check(
     items: list[FetchedItem], *, now: datetime | None = None
 ) -> FetchedItem | None:
-    """`CHECK_FORWARD` picks the next kickoff. Flip it to preview the latest result."""
-    picker = pick_next_match if CHECK_FORWARD else pick_latest_match
-    return picker(items, now=now)
+    """The club's next game: on now, otherwise the next kickoff."""
+    return pick_next_match(items, now=now)
 
 
 def _soonest(item: FetchedItem) -> tuple[int, datetime]:
@@ -377,3 +345,40 @@ def match_delete_after(item: FetchedItem, now: datetime) -> float | None:
 def hold_bookmark(item: FetchedItem, *, now: datetime | None = None) -> bool:
     """Keep live, preview, later, postponed, and recent result ids unbookmarked."""
     return is_match_item(item) and item_role(item, now or datetime.now(timezone.utc)) != "idle"
+
+
+IDLE_REFRESH = timedelta(hours=24)
+
+
+def sports_fetch_due(
+    *,
+    fetched_at: datetime | None,
+    next_kickoff: datetime | Sequence[datetime] | None,
+    now: datetime,
+    sport: str = "",
+) -> bool:
+    """Fetch in a fixture's preview/on/result window, else about once a day."""
+    from news.follows import kickoff_times
+
+    open_now = any(watch_open(stamp, now, sport) for stamp in kickoff_times(next_kickoff))
+    return fetched_at is None or open_now or now - fetched_at >= IDLE_REFRESH
+
+def sports_source_due(follows: list, now: datetime) -> bool:
+    from news.follows import parse_stored_time, parse_stored_times
+
+    latest = None
+    for item in follows:
+        stamp = parse_stored_time(item.get("fetched_at"))
+        if stamp is None:
+            return True
+        if latest is None or stamp > latest[0]:
+            latest = (stamp, item)
+    if latest is None:
+        return False
+    fetched_at, item = latest
+    return sports_fetch_due(
+        fetched_at=fetched_at,
+        next_kickoff=parse_stored_times(item.get("next_kickoff")),
+        now=now,
+        sport=item.get("sport") or "",
+    )

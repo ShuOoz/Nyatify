@@ -24,6 +24,7 @@ from news.source.post.bilibili.browser import (
     clear_wbi_key,
     space_xhr_headers,
 )
+from news.source.post.bilibili import shows_post
 from news.source.post.bilibili.dynamics import (
     LIST,
     QUIET,
@@ -33,7 +34,6 @@ from news.source.post.bilibili.dynamics import (
     for_model,
     is_paragraph,
     note_list_post,
-    shows_list_post,
     space_stats,
 )
 from news.source.post.bilibili.protobuf import decode_message, encode_message
@@ -325,6 +325,9 @@ def case_reserve_notice_reads_the_show_day():
     assert new_year == ("跨年 1月2日 19:00", "watch:2027-1-2-19:00")
     named = dynamics.reserve_notice("跨年", "2026年1月2日 19:00", december)
     assert named[1] == "watch:2026-1-2-19:00"
+    assert dynamics.watch_quote((named[1],)) == "2026年1月2日 19:00"
+    assert dynamics.watch_quote(("watch:2026-10-6-19:30",)) == "2026年10月6日 19:30"
+    assert dynamics.watch_quote(()) == ""
 
 
 def _post(text: str, *, title: str = "", **kwargs):
@@ -511,8 +514,8 @@ async def case_the_visitor_list_tags_a_paragraph_and_a_short_row(monkeypatch):
     assert LIST in items[0].tags
     assert QUIET in items[1].tags
     assert items[0].text == _PARAGRAPH
-    assert shows_list_post(items[0], FEATURE_GAME) is True
-    assert shows_list_post(items[0], FEATURE_OTHER) is False
+    assert shows_post(items[0], FEATURE_GAME) is True
+    assert shows_post(items[0], FEATURE_OTHER) is False
     assert BILI_SPACE_URL not in sent
     opus_call, = sent[BILI_OPUS_URL]
     assert opus_call["params"]["host_mid"] == UID

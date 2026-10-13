@@ -12,7 +12,7 @@ from typing import Any
 
 from fetch import FetchError
 from news.drafts import AiCache
-from news.follows import FEATURE_TICKET, GuildTopic, SourceKey
+from news.follows import FEATURE_TICKET, GuildTopic, SourceKey, TICKET_BACKFILL
 from news.rounds import Poll, hold_tickets, is_due, pause_between, poll_source, skip_failed
 from news.source.post.common import check_enabled, proxy_label, share_accounts, vet, weibo_rest
 from news.source.post.weibo import (
@@ -23,7 +23,7 @@ from news.source.post.weibo import (
     set_login_held,
 )
 from news.source.post.weibo.http import bound_proxy, current_proxy
-from news.source.post.weibo.ticket import DAMAI_WEIBO, TICKET_BACKFILL
+from news.source.post.weibo.ticket import DAMAI_WEIBO
 
 SendSale = Callable[..., Awaitable[Any]]
 

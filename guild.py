@@ -87,6 +87,7 @@ class GuildConfig:
         self.path = path or DEFAULT_PATH
         _adopt_legacy_guild_file(self.path)
         self._data: dict[str, Any] | None = None
+        self._readable = True
 
     def get_default_announce_channel_id(self, guild_id: int) -> int | None:
         return parse_snowflake(self._guild_entry(guild_id).get("announce_channel_id"))
@@ -297,17 +298,23 @@ class GuildConfig:
 
     def _load(self) -> dict[str, Any]:
         if self._data is None:
-            self._data = self._read()
+            data = self._read()
+            if self._readable:
+                self._data = data
+            return data
         return self._data
 
     def _read(self) -> dict[str, Any]:
         if not self.path.exists():
+            self._readable = True
             return {"guilds": {}}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            log.exception("Could not read %s; using empty guild config.", self.path)
+            log.exception("Could not read %s; guild config was not replaced.", self.path)
+            self._readable = False
             return {"guilds": {}}
+        self._readable = True
         if not isinstance(data, dict):
             return {"guilds": {}}
         guilds = data.get("guilds")
@@ -316,6 +323,9 @@ class GuildConfig:
         return data
 
     def _save(self, data: dict[str, Any]) -> None:
+        if not self._readable:
+            log.error("Not saving guild config; %s could not be read.", self.path)
+            return
         payload = json.dumps(data, indent=2, sort_keys=True)
         write_text_atomic(self.path, payload + "\n")
         self._data = data

@@ -304,6 +304,12 @@ def case_overlay_fills_scores_and_retags_after_kickoff():
         from_board=False,
     )
     assert (kept.home_score, kept.away_score) == ("3", "0")
+    opened = overlay_espn(
+        match_state("9", phase="finished", home_score="0", away_score="0"),
+        extra,
+        from_board=False,
+    )
+    assert (opened.home_score, opened.away_score) == ("2", "1")
     swapped = overlay_espn(
         blank,
         _espn(home="Chelsea", away="Arsenal", url="", home_score="1", away_score="2", state="post"),
@@ -388,9 +394,9 @@ async def case_with_espn_overlays_the_board_then_ignores_a_miss():
         league="Premier League",
         league_id="4328",
     )
-    quiet = FakeHttp({})
-    untouched = await with_espn([state], get=quiet, now=now, club="  ")
-    assert quiet.urls == []
+    unused = FakeHttp({})
+    untouched = await with_espn([state], get=unused, now=now, club="  ")
+    assert unused.urls == []
     assert untouched[0].phase == "live"
 
     missed = FakeHttp({})

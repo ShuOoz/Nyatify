@@ -30,7 +30,7 @@ from tests.helpers import (
 )
 
 
-async def test_thesportsdb_source(tmp_path, monkeypatch):
+async def test_thesportsdb_source(tmp_path):
     case_parse_account()
     cards = tmp_path / "cards"
     cards.mkdir()
@@ -43,7 +43,7 @@ async def test_thesportsdb_source(tmp_path, monkeypatch):
     await case_thesportsdb_espn_picks_followed_club(picks)
     holds = tmp_path / "holds"
     holds.mkdir()
-    await case_thesportsdb_holds_and_scans_schedule(holds, monkeypatch)
+    await case_thesportsdb_holds_and_scans_schedule(holds)
 
 
 async def test_posted_card_looks_up_a_match_the_free_lists_dropped(tmp_path):
@@ -351,7 +351,7 @@ async def case_thesportsdb_espn_picks_followed_club(tmp_path):
     assert "401884790" in done.url
     assert done.title == "Bayern Munich 7–0 Union Berlin"
 
-async def case_thesportsdb_holds_and_scans_schedule(tmp_path, monkeypatch):
+async def case_thesportsdb_holds_and_scans_schedule(tmp_path):
     kickoff = utc(2026, 9, 7, 15)
     upcoming = sportsdb_bodies(
         ARSENAL,
@@ -448,11 +448,11 @@ async def case_thesportsdb_holds_and_scans_schedule(tmp_path, monkeypatch):
     assert not any("d=2026-09-08" in url for url in holes)
     assert any("d=2026-09-11" in url for url in holes)
 
-    monkeypatch.setattr("news.source.match.thesportsdb.clubs.SPORTSDB_MINUTE_CAP", 3)
-    capped = _fetcher(tmp_path, sportsdb_bodies(CITY, now=SCAN), now=SCAN)
-    got = await capped.pull("thesportsdb", "133613")
-    assert got.schedule is False
-    assert _urls(capped, "eventsday.php") == []
+    shared = _fetcher(tmp_path, sportsdb_bodies(CITY, now=SCAN), now=SCAN)
+    await shared.pull("thesportsdb", "133613")
+    client = shared.sportsdb
+    await shared.pull("thesportsdb", "133613")
+    assert shared.sportsdb is client
 
 
 async def case_posted_card_looks_up_a_match_the_free_lists_dropped(tmp_path: Path):
@@ -553,8 +553,9 @@ async def case_stale_last_result_still_finds_the_newer_match(tmp_path: Path):
     loaded = await fetcher.load("thesportsdb", "133739", include_hard_skip=True)
     picked = pick_check(loaded.items, now=now)
     assert loaded.schedule is True
-    assert picked is not None and picked.item_id == "401882859:end"
-    assert picked.title == "Sevilla 1–3 Barcelona"
+    found = next(item for item in loaded.items if item.item_id == "401882859:end")
+    assert found.title == "Sevilla 1–3 Barcelona"
+    assert picked is not None and picked.item_id == "2:next"
     urls = _urls(fetcher, "eventsday.php")
     assert any("d=2026-09-19" in url and "l=4335" in url for url in urls)
     assert not any("d=2026-09-18" in url or "d=2026-09-17" in url for url in urls)

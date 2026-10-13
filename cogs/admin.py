@@ -12,12 +12,12 @@ from discord import app_commands
 from discord.ext import commands
 
 from announce import (
+    AnnounceCommands,
     ACCENT_COLOR,
     CommandTarget,
     command_error_message,
     defer_response,
     notice_text,
-    notify_feature_channel_gone,
     owner_only,
     respond,
     unwrap_command_error,
@@ -25,8 +25,6 @@ from announce import (
 from config import settings
 from guild import (
     GuildConfig,
-    announce_features,
-    canonical_announce_feature,
     guild_config as default_guild_config,
 )
 from loader import (
@@ -36,14 +34,11 @@ from loader import (
     public_cog_name,
     public_cog_names,
 )
-from news.follows import NEWS_FEATURES
-
+from news.command.test import HIDDEN_COMMANDS
 
 CORE_MODULES = {"announce", "notice"}
 HIDDEN_OWNER_COMMANDS = ("cogs", "load", "unload", "reload")
-_HIDDEN_NEWS = ("cookie", "check")
 _CommandParent = app_commands.CommandTree | app_commands.Group
-ANNOUNCE_SHOW_SECONDS = 20.0
 REQUIRED_INTENTS = ("message_content",)
 log = logging.getLogger(__name__)
 
@@ -59,33 +54,6 @@ def _not_a_cog_message(name: str) -> str | None:
     if public.lower() not in CORE_MODULES:
         return None
     return notice_text(f"`{public}` is shared. Restart to apply.")
-
-
-def _unknown_announce_feature(name: str) -> str:
-    known = ordered_announce_features()
-    extra = "See `/announce show`." if known else None
-    return notice_text(f"`{name}` is unknown.", extra)
-
-
-def ordered_announce_features() -> tuple[str, ...]:
-    names = {name for name in announce_features() if name != "admin"}
-    voice = ("voice",) if "voice" in names else ()
-    other = ("other",) if "other" in names else ()
-    news = tuple(name for name in NEWS_FEATURES if name in names and name != "other")
-    rest = tuple(sorted(names - {*voice, *NEWS_FEATURES}))
-    return voice + rest + news + other
-
-
-async def _announce_feature_autocomplete(
-    _interaction: discord.Interaction,
-    current: str,
-) -> list[app_commands.Choice[str]]:
-    needle = current.lower()
-    return [
-        app_commands.Choice(name=name, value=name)
-        for name in ordered_announce_features()
-        if needle in name
-    ][:25]
 
 
 def _admin_stash(bot: commands.Bot) -> dict[str, app_commands.Command | app_commands.Group]:
@@ -121,7 +89,7 @@ def apply_admin_command_visibility(bot: commands.Bot) -> None:
     stash = _admin_stash(bot)
     show = bool(getattr(bot, "admin_commands_visible", False))
     slots = [(None, name) for name in HIDDEN_OWNER_COMMANDS]
-    slots += [("news", name) for name in _HIDDEN_NEWS]
+    slots += [("news", name) for name in HIDDEN_COMMANDS]
     for group, name in slots:
         parent = _hidden_parent(tree, group)
         if parent is None:
@@ -151,21 +119,8 @@ def _missing_intent_names(bot: commands.Bot, extension: str) -> tuple[str, ...]:
     return tuple(missing)
 
 
-def _guild(target: CommandTarget) -> discord.Guild:
-    guild = target.guild
-    assert guild is not None
-    return guild
-
-
-class Admin(commands.Cog):
+class Admin(AnnounceCommands, commands.Cog):
     """Manage which cogs are running without restarting the bot."""
-
-    announce = app_commands.Group(
-        name="announce",
-        description="Set or show announcement channels for this server",
-        guild_only=True,
-        default_permissions=discord.Permissions(manage_guild=True),
-    )
 
     def __init__(
         self,
@@ -179,99 +134,6 @@ class Admin(commands.Cog):
         if ctx.guild is None:
             raise commands.NoPrivateMessage()
         return True
-
-    @announce.command(name="show", description="Show announcement channels")
-    async def announce_show(self, interaction: discord.Interaction) -> None:
-        await self._announce_show(interaction)
-
-    @announce.command(name="feature", description="Set the announcement channel")
-    @app_commands.describe(
-        channel="Text channel for announcements",
-        cog="Leave empty so every function uses this channel",
-    )
-    @app_commands.autocomplete(cog=_announce_feature_autocomplete)
-    async def announce_feature(
-        self,
-        interaction: discord.Interaction,
-        channel: discord.TextChannel,
-        cog: str | None = None,
-    ) -> None:
-        if cog is None:
-            await self._set_announce(interaction, channel, None)
-            return
-        feature = canonical_announce_feature(cog)
-        if feature is None:
-            await respond(interaction, _unknown_announce_feature(cog))
-            return
-        await self._set_announce(interaction, channel, feature)
-
-    async def _set_announce(
-        self,
-        target: CommandTarget,
-        channel: discord.TextChannel,
-        feature: str | None,
-    ) -> None:
-        guild = _guild(target)
-        if feature is None:
-            self.guild_config.set_announce_channel_id(guild.id, channel.id)
-            log.info("Default announce channel for guild %s set to %s", guild.id, channel.id)
-            await respond(target, notice_text(f"All posts go to {channel.mention}."))
-            return
-        default_id = self.guild_config.get_default_announce_channel_id(guild.id)
-        if default_id is not None and channel.id == default_id:
-            self.guild_config.clear_feature_announce_channel_id(guild.id, feature)
-            log.info(
-                "Announce channel for guild %s function %s reset to default %s",
-                guild.id,
-                feature,
-                channel.id,
-            )
-            await respond(target, notice_text(f"`{feature}` uses default {channel.mention}."))
-            return
-        self.guild_config.set_feature_announce_channel_id(guild.id, feature, channel.id)
-        log.info(
-            "Announce channel for guild %s function %s set to %s",
-            guild.id,
-            feature,
-            channel.id,
-        )
-        await respond(target, notice_text(f"`{feature}` posts in {channel.mention}."))
-
-    def _channel_mention(self, guild: discord.Guild, channel_id: int | None) -> str:
-        if channel_id is None:
-            return "not set"
-        channel = guild.get_channel(channel_id)
-        if channel is None:
-            return f"missing (`{channel_id}`)"
-        return channel.mention
-
-    def _announce_show_embed(self, guild: discord.Guild) -> discord.Embed:
-        default_id = self.guild_config.get_default_announce_channel_id(guild.id)
-        overrides = self.guild_config.get_feature_overrides(guild.id)
-        embed = discord.Embed(title="Announcement channels", color=ACCENT_COLOR)
-        embed.add_field(
-            name="Default",
-            value=self._channel_mention(guild, default_id),
-            inline=False,
-        )
-        names = ordered_announce_features()
-        for name in names:
-            value = (
-                self._channel_mention(guild, overrides[name])
-                if name in overrides
-                else "using default"
-            )
-            embed.add_field(name=name.capitalize(), value=value, inline=False)
-        if not names:
-            embed.add_field(name="Functions", value="none", inline=False)
-        return embed
-
-    async def _announce_show(self, target: CommandTarget) -> None:
-        await respond(
-            target,
-            embed=self._announce_show_embed(_guild(target)),
-            delete_after=ANNOUNCE_SHOW_SECONDS,
-        )
 
     @commands.hybrid_command(name="ping", description="Check that Nyatify is online")
     @commands.guild_only()
@@ -372,34 +234,6 @@ class Admin(commands.Cog):
     async def on_guild_remove(self, guild: discord.Guild) -> None:
         self.guild_config.remove_guild(guild.id)
         log.info("Removed stored settings for guild %s", guild.id)
-
-    @commands.Cog.listener()
-    async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel) -> None:
-        guild = channel.guild
-        if guild is None:
-            return
-        default_cleared, features = self.guild_config.forget_announce_channel(
-            guild.id, channel.id
-        )
-        if default_cleared:
-            log.info(
-                "Default announce channel %s deleted in guild %s", channel.id, guild.id
-            )
-        if not features:
-            return
-        log.info(
-            "Announce channel for %s deleted in guild %s; using default",
-            ", ".join(features),
-            guild.id,
-        )
-        default_id = self.guild_config.get_default_announce_channel_id(guild.id)
-        default = None if default_id is None else guild.get_channel(default_id)
-        if default is None:
-            return
-        for feature in features:
-            await notify_feature_channel_gone(
-                default, self.guild_config, guild.id, feature
-            )
 
     async def _swap_cog(
         self, interaction: discord.Interaction, cog: str, *, action: str, verb: str

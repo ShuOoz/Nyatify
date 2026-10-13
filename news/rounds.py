@@ -13,20 +13,64 @@ import random
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ai import AI
 from fetch import FetchError, FetchedItem, poll_delay, public_fetch_message
 from guild import GuildConfig
-from news.feeds import Fetcher, PullResult, deliver, pull_locked
-from news.follows import GuildTopic, SourceKey, remember_source
-from news.source.match.common import NEXT_TAG, is_match_item, kickoff_id, match_stage, started_keys
+from news.feeds import Fetcher, PullResult, _before_line, _posted_since, pull_locked
+from news.follows import (
+    FEATURE_TICKET, TICKET_BACKFILL, TOPIC_UNASSIGNED, Follow, GuildTopic, SourceKey,
+    iter_news_follows, remember_source,
+)
+from news.source.match.common import (
+    NEXT_TAG, is_match_item, kickoff_id, match_stage, sports_source_due, started_keys,
+)
 from news.source.post import bilibili as bili_source
 from news.source.post.weibo.ticket import DamaiWatch, take_artist
-from news.source.registry import apply_news_cookie, feed_fault, is_match_platform, source_named
+from news.source.registry import (
+    apply_news_cookie, feed_fault, flood_cap, hold_bookmark, is_hard_skip,
+    is_match_platform, source_named,
+)
 
 log = logging.getLogger(__name__)
+
+
+def poll_plan(
+    store: GuildConfig, *, now: float, now_wall: datetime, poll_post: bool,
+    poll_match: bool, skip_until: dict[SourceKey, float], guild_ok: Callable[[int], bool],
+    poll_ticket: bool = True,
+) -> tuple[set[SourceKey], dict[SourceKey, list[GuildTopic]], list[SourceKey], list[SourceKey], list[SourceKey]]:
+    keep: set[SourceKey] = set()
+    live: dict[SourceKey, list[GuildTopic]] = {}
+    sports_follows: dict[SourceKey, list[Follow]] = {}
+    for guild_id, follow in iter_news_follows(store):
+        source = (follow["platform"], follow["account"])
+        keep.add(source)
+        if follow["topic"] == TOPIC_UNASSIGNED or not guild_ok(guild_id):
+            continue
+        live.setdefault(source, []).append((guild_id, follow["topic"]))
+        if is_match_platform(source[0]):
+            sports_follows.setdefault(source, []).append(follow)
+    sports: list[SourceKey] = []
+    posts: list[SourceKey] = []
+    tickets: list[SourceKey] = []
+    for source in sorted(live):
+        if now < skip_until.get(source, 0.0):
+            continue
+        if is_match_platform(source[0]):
+            if poll_match and sports_source_due(sports_follows.get(source, []), now_wall):
+                sports.append(source)
+            continue
+        topics = {topic for _, topic in live[source]}
+        if topics == {FEATURE_TICKET}:
+            if poll_ticket:
+                tickets.append(source)
+        elif poll_post:
+            posts.append(source)
+    return keep, live, sports, posts, tickets
+
 
 Announce = Callable[[str, str, Sequence[tuple[int, str]], FetchedItem], Awaitable[int]]
 SaveCookie = Callable[[dict[str, Any]], Awaitable[object]]
@@ -227,3 +271,113 @@ async def skip_failed(
     poll.skip_until[source] = time.monotonic() + fault.skip_seconds
     if fault.cookie:
         await poll.warn_cookie(source, live, exc, fault.skip_seconds)
+
+
+async def deliver(
+    fetcher: Fetcher, platform: str, account: str, live: Sequence[tuple[int, str]],
+    got: PullResult,
+    announce: Callable[[str, str, Sequence[tuple[int, str]], FetchedItem], Awaitable[int]],
+) -> int:
+    """New items, then missed guilds, then the ticket week. The flood cap stops the round."""
+    cap = flood_cap(platform)
+    posted = posted_here = 0
+    done: set[str] = set()
+
+    async def send(items, audience, *, warn: str | None = None, bookmark: bool = True) -> None:
+        nonlocal posted, posted_here
+        for item in items:
+            if cap is not None and posted_here >= cap:
+                if warn:
+                    log.warning(warn, cap, len(items), platform, account, cap)
+                return
+            n = await announce(platform, account, audience, item)
+            posted += n
+            if bookmark:
+                done.add(item.item_id)
+            if n:
+                posted_here += 1
+
+    capped = cap is not None
+    await send(
+        list(reversed(got.new)) if capped else list(got.new), live,
+        warn="Posted %s of %s new items for %s %s (cap %s); the rest wait",
+    )
+    if cap is not None and posted_here >= cap:
+        return posted
+    now = fetcher._clock()
+    await send(
+        catch_up_items(fetcher, platform, account, live, got, done, cap, now=now),
+        live, bookmark=False,
+    )
+    ticket_live = [pair for pair in live if pair[1] == FEATURE_TICKET]
+    if not ticket_live or is_match_platform(platform) or (cap is not None and posted_here >= cap):
+        return posted
+    floor, since = (None, None) if got.opening else fetcher.bookmarks.catch_line(platform, account)
+    backlog = _ticket_backlog(got, done, now, floor=floor, since=since)
+    await send(
+        list(reversed(backlog)) if capped else backlog, ticket_live,
+        warn="Posted %s of %s ticket backlog items for %s %s (cap %s); the rest wait",
+    )
+    return posted
+
+
+def _ticket_backlog(
+    got: PullResult, done: set[str], now: datetime, *,
+    floor: int | None = None, since: datetime | None = None,
+) -> list[FetchedItem]:
+    """Ticket-week posts this pull will not announce as new. The opus page stays history."""
+    fresh = {item.item_id for item in got.new if item.item_id} | done
+    window = TICKET_BACKFILL
+    found: list[FetchedItem] = []
+    seen: set[str] = set()
+    for item in got.items:
+        if not item.item_id or item.item_id in seen or item.item_id in fresh:
+            continue
+        seen.add(item.item_id)
+        if hold_bookmark(item, now=now) or is_hard_skip(item, now=now):
+            continue
+        if _before_line(item, floor, since) or not _posted_since(item, now, window):
+            continue
+        found.append(item)
+    return found
+
+
+def _ticket_only(item: FetchedItem, already: set[str], now: datetime) -> bool:
+    """True when this recent post was handed only to ticket servers."""
+    if not already or is_match_platform(item.platform):
+        return False
+    if not _posted_since(item, now, TICKET_BACKFILL):
+        return False
+    return all(ref.partition(":")[2] == FEATURE_TICKET for ref in already)
+
+
+def catch_up_items(
+    fetcher: Fetcher, platform: str, account: str, live: Sequence[tuple[int, str]],
+    got: PullResult, done: set[str], cap: int | None, *, now: datetime | None = None,
+) -> list[FetchedItem]:
+    stamp = now if now is not None else datetime.now(timezone.utc)
+    firsts: dict[str, FetchedItem] = {}
+    for item in (*got.visible, *got.starts):
+        if item.item_id:
+            firsts.setdefault(item.item_id, item)
+    loaded = [item for item in firsts.values() if hold_bookmark(item, now=stamp)]
+    if not loaded:
+        if cap is None:
+            return []
+        loaded = list(firsts.values())[:1]
+    posted_now = {item.item_id for item in got.new if item.item_id}
+    wanted: list[FetchedItem] = []
+    for item in loaded:
+        if item.item_id in done:
+            continue
+        already = fetcher.delivered_refs(platform, account, item.item_id)
+        if is_match_platform(item.platform) and hold_bookmark(item, now=stamp):
+            wanted.append(item)
+            continue
+        if item.item_id in posted_now or not already or _ticket_only(item, already, stamp):
+            continue
+        if any(
+            not any(ref.startswith(f"{guild_id}:") for ref in already) for guild_id, _topic in live
+        ):
+            wanted.append(item)
+    return wanted

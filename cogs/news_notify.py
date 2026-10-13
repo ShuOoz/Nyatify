@@ -7,7 +7,7 @@ import logging
 import random
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -29,20 +29,20 @@ from guild import (
 from news import drafts
 from news.cards import (
     match_event_id, match_notice_extra, match_recap_notes, news_card,
-    older_match_card, saved_match_summary, stream_fingerprint,
+    older_match_card, saved_match_summary,
 )
 from news.command import NewsSlash
-from news.feeds import Fetcher, PullResult
+from news.feeds import Fetcher
 from news.follows import (
-    FEATURE_TICKET, FOLLOWS_KEY, NEWS_FEATURES, GuildTopic, SourceKey,
-    block_live_room, iter_news_follows, parse_stored_times, poll_plan,
+    FEATURE_TICKET, FOLLOWS_KEY, NEWS_FEATURES, TICKET_BACKFILL, GuildTopic, SourceKey,
+    iter_news_follows, parse_stored_times,
 )
-from news.rounds import Poll, poll_list
+from news.rounds import Poll, poll_list, poll_plan
 from news.source.match.common import (
     START_LATE, START_POLL_JITTER_SECONDS, START_POLL_SECONDS, kickoff_id,
     match_delete_after, match_stage, sources_awaiting_start,
 )
-from news.source.post.bilibili import BiliCookies, is_bili_login_cookie
+from news.source.post.bilibili import BiliCookies, block_live_room, is_bili_login_cookie
 from news.source.post.bilibili.dynamics import watch_quote
 from news.source.post.bilibili.round import BiliState, poll_bili
 from news.source.post.weibo import round as weibo_round
@@ -96,7 +96,7 @@ def _stream_stamp(cache, item, topic: str) -> str | None:
     job = cache.get(drafts.filter_cache_key(item, topic))
     if not isinstance(job, drafts.FilterJob):
         return None
-    return stream_fingerprint(
+    return drafts.stream_fingerprint(
         job.quotes, item.occurred_at, keep=job.keep, kind=job.kind, watch=watch_quote(item.tags),
     )
 
@@ -113,39 +113,6 @@ class _Delivery:
     new: list[str] = field(default_factory=list)
     done: list[str] = field(default_factory=list)
     stamps: list[tuple[str, str]] = field(default_factory=list)
-
-
-class _OpenEdits:
-    """One poll's fetcher. A post this cog already judged comes back when its words change."""
-
-    def __init__(self, inner: Any, decided: dict[tuple[str, str, str], str]) -> None:
-        object.__setattr__(self, "_inner", inner)
-        object.__setattr__(self, "_decided", decided)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._inner, name)
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        setattr(self._inner, name, value)
-
-    async def pull(self, platform: str, account: str, **kwargs: Any) -> PullResult:
-        got = await self._inner.pull(platform, account, **kwargs)
-        return _reopen_edits(self._decided, platform, got.team_id or account, got)
-
-
-def _reopen_edits(
-    decided: dict[tuple[str, str, str], str], platform: str, account: str, got: PullResult,
-) -> PullResult:
-    known = {item.item_id for item in got.new}
-    extra = []
-    for item in got.items:
-        if not item.item_id or item.item_id in known:
-            continue
-        saved = decided.get((platform, account, item.item_id))
-        if saved is not None and saved != drafts.word_fingerprint(item):
-            extra.append(item)
-            known.add(item.item_id)
-    return replace(got, new=[*got.new, *extra]) if extra else got
 
 
 class NewsNotify(NewsSlash, NotifyCog):
@@ -180,8 +147,6 @@ class NewsNotify(NewsSlash, NotifyCog):
         # Claimed Discord sends that have not finished: platform, account, item id, guild ref.
         self._sending: set[tuple[str, str, str, str]] = set()
         self._filter_cache = drafts.AiCache()
-        # Words already judged, keyed by platform, account, and post id.
-        self._decided: dict[tuple[str, str, str], str] = {}
         self._write_cache = drafts.AiCache()
         self._damai = weibo_ticket.DamaiWatch()
         self._skip_until: dict[SourceKey, float] = {}
@@ -351,9 +316,9 @@ class NewsNotify(NewsSlash, NotifyCog):
         post_sources = (*posts, *tickets)
         bili_due = _accounts(post_sources, "bilibili")
         weibo_due = _accounts(post_sources, "weibo")
-        other_posts = [source for source in posts if source[0] not in _ROUND_PLATFORMS]
-        other_tickets = [source for source in tickets if source[0] not in _ROUND_PLATFORMS]
-        self._rng.shuffle(other_posts)
+        plain_posts = [source for source in posts if source[0] not in _ROUND_PLATFORMS]
+        plain_tickets = [source for source in tickets if source[0] not in _ROUND_PLATFORMS]
+        self._rng.shuffle(plain_posts)
         # A match check must not wipe a stop the post check is still using.
         if weibo_due or damai_on:
             self._weibo_stopped.clear()
@@ -361,14 +326,14 @@ class NewsNotify(NewsSlash, NotifyCog):
         poll = self._poll_state()
         pool = weibo_round.ProxyPool()
 
-        async def listed(sources, gap, jitter, backfill=None):
+        async def poll_plain(sources, gap, jitter, backfill=None):
             return await poll_list(
                 poll, sources, live, now_wall, gap=gap, jitter=jitter,
                 backfill=backfill, only=only, rng=self._rng,
             )
 
         rounds = [
-            await listed(sports, self._match_fetch_gap, 0.0),
+            await poll_plain(sports, self._match_fetch_gap, 0.0),
             await poll_bili(
                 poll, self._bili_state, bili_due, live, now_wall, only,
                 backfill_for=set(_accounts(tickets, "bilibili")),
@@ -380,8 +345,8 @@ class NewsNotify(NewsSlash, NotifyCog):
                 post_gap=self._post_fetch_gap, ticket_gap=self._ticket_fetch_gap,
                 jitter=POST_FETCH_JITTER_SECONDS, rng=self._rng,
             ),
-            await listed(other_posts, self._post_fetch_gap, POST_FETCH_JITTER_SECONDS),
-            await listed(other_tickets, self._ticket_fetch_gap, 0.0, weibo_ticket.TICKET_BACKFILL),
+            await poll_plain(plain_posts, self._post_fetch_gap, POST_FETCH_JITTER_SECONDS),
+            await poll_plain(plain_tickets, self._ticket_fetch_gap, 0.0, TICKET_BACKFILL),
         ]
         posted = sum(count for count, _ in rounds)
         if damai_on:
@@ -399,7 +364,7 @@ class NewsNotify(NewsSlash, NotifyCog):
 
     def _poll_state(self) -> Poll:
         return Poll(
-            fetcher=_OpenEdits(self.fetcher, self._decided), fetch_lock=self._fetch_lock,
+            fetcher=self.fetcher, fetch_lock=self._fetch_lock,
             bili=self.bili, guild_config=self.guild_config, damai=self._damai, ai=self.ai,
             ai_lock=self._ai_lock, ai_on=self._ai_on_poll, skip_until=self._skip_until,
             seen_live=self._seen_live, bili_stopped=self._bili_stopped,
@@ -413,7 +378,7 @@ class NewsNotify(NewsSlash, NotifyCog):
         exc: BaseException, skip_seconds: float,
     ) -> None:
         platform, account = key
-        hint = notice_text(auth_expired_message(platform))
+        hint = notice_text(auth_expired_message(platform), brief=True)
         log.warning("%s (%s)", hint, exc)
         subject = f"cookie:{platform}:{account}"
         now = self.notices._now()
@@ -496,15 +461,14 @@ class NewsNotify(NewsSlash, NotifyCog):
             self.fetcher.mark_delivered(platform, account, item.item_id, delivery.new)
         for stamp, ref in delivery.stamps:
             self.fetcher.mark_delivered(platform, account, stamp, [ref])
-        # A claim still waiting on Discord is not sent yet, so it does not count.
         handled = (delivery.already | set(delivery.done)) - self._sending_refs(
             platform, account, item.item_id,
         )
         refs = {f"{guild}:{topic}" for guild, topic in audience}
         noted = note_list_post(item, account, audience, handled)
         if refs and refs <= handled and not hold_bookmark(item) and not noted:
-            self._decided[(platform, account, item.item_id)] = drafts.word_fingerprint(item)
             self.fetcher.mark_seen(platform, account, [item.item_id])
+            self.fetcher.note_words(platform, account, item.item_id, drafts.word_fingerprint(item))
 
     def _sending_refs(self, platform: str, account: str, item_id: str) -> set[str]:
         """Guild refs whose Discord send for this item is claimed and not finished."""

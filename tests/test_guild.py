@@ -28,6 +28,7 @@ def test_guild_config(tmp_path, news_feature):
     case_feature_override_beats_default_until_cleared(tmp_path, news_feature)
     case_unregister_and_unknown_feature(tmp_path)
     case_guild_list_round_trip(tmp_path)
+    case_unreadable_guild_file_is_not_overwritten(tmp_path)
 
 def case_legacy_guild_file_still_resolves_the_announce_channel(tmp_path: Path):
     legacy = tmp_path / "guild_config.json"
@@ -122,3 +123,11 @@ def case_guild_list_round_trip(tmp_path: Path):
     other = GuildConfig(path)
     assert other.guild_list(1, "items") == []
     assert other.get_default_announce_channel_id(1) == 10
+
+
+def case_unreadable_guild_file_is_not_overwritten(tmp_path: Path):
+    path = tmp_path / "broken.json"
+    path.write_text("{", encoding="utf-8")
+    store = GuildConfig(path)
+    store.set_announce_channel_id(1, 10)
+    assert path.read_text(encoding="utf-8") == "{"

@@ -176,7 +176,8 @@ async def case_grace_blocks_reconnect_until_it_expires(cog, text_channel, guild,
     posted = text_channel.send.return_value
     voice.members = [bot_user]
     await _update(cog, human, voice, None)
-    posted.delete.assert_awaited()
+    posted.delete.assert_not_awaited()
+    assert cog.notices.live(FEATURE_VOICE, guild.id, str(human.id)) is not None
     text_channel.send.reset_mock()
 
     clock.advance(RECONNECT_GRACE_SECONDS - 1)
@@ -279,6 +280,7 @@ async def case_ready_and_restart_keep_ttl_and_grace(store, clock, tmp_path, guil
     await _update(ready, leaver, grace_room, None)
     text_channel.send.reset_mock()
     await ready.on_ready()
+    assert ready.notices.live(FEATURE_VOICE, guild.id, str(leaver.id)) is not None
     clock.advance(RECONNECT_GRACE_SECONDS - 1)
     grace_room.members = [leaver]
     await _update(ready, leaver, None, grace_room)
@@ -319,6 +321,7 @@ async def case_ready_and_restart_keep_ttl_and_grace(store, clock, tmp_path, guil
     guild.voice_channels = [persist]
     after.bot.guilds = [guild]
     await after.on_ready()
+    assert after.notices.live(FEATURE_VOICE, guild.id, str(grace_member.id)) is not None
     clock.advance(RECONNECT_GRACE_SECONDS - 1)
     persist.members = [grace_member]
     await _update(after, grace_member, None, persist)
@@ -417,14 +420,15 @@ async def test_bots_afk_mute_and_empty_moves(cog, text_channel, guild):
     bots.members = [bot_user]
     await _update(cog, human, bots, afk)
     posted = text_channel.send.return_value
-    posted.delete.assert_awaited()
-    assert cog.notices.live(FEATURE_VOICE, guild.id, str(human.id)) is None
+    posted.delete.assert_not_awaited()
+    assert cog.notices.live(FEATURE_VOICE, guild.id, str(human.id)) is not None
     text_channel.send.reset_mock()
     await _update(cog, human, None, afk)
     text_channel.send.assert_not_awaited()
     assert afk.id not in cog.active_channels
     await _update(cog, human, afk, voice)
-    _assert_voice_posts(text_channel)
+    text_channel.send.assert_not_awaited()
+    posted.edit.assert_awaited()
     assert voice.id in cog.active_channels
 
     mover = fake_member("Mover", 2)
@@ -557,7 +561,8 @@ async def test_teardown_drops_state_and_missing_channel_skips(
     guild.get_channel.return_value = None
     await _update(cog, member, None, voice)
     text_channel.send.assert_not_awaited()
-    assert voice.id not in cog.active_channels
+    assert voice.id in cog.active_channels
+    assert cog.notices.live(FEATURE_VOICE, guild.id, str(member.id)) is not None
 
     guild.get_channel.return_value = text_channel
     voice.members = [member]
@@ -591,3 +596,47 @@ async def test_teardown_drops_state_and_missing_channel_skips(
     assert second.notices is first.notices
     assert second.notices._purge.is_running()
     second.notices.stop(force=True)
+
+
+async def test_a_missed_card_stays_open_and_a_bad_session_file_is_kept(
+    store, clock, guild, text_channel, tmp_path
+):
+    retry = _voice_notify(store, clock, tmp_path / "retry.json")
+    first = fake_member("First", 21)
+    second = fake_member("Second", 22)
+    room = fake_voice_channel(channel_id=70, members=[first], guild=guild)
+    text_channel.send = AsyncMock(
+        side_effect=discord.HTTPException(MagicMock(status=500), {"message": "no"})
+    )
+    await _update(retry, first, None, room)
+    assert room.id not in retry.active_channels
+    assert (guild.id, first.id) not in retry._announced
+    _capture_posts(text_channel)
+    room.members = [first, second]
+    await _update(retry, second, None, room)
+    _assert_voice_posts(text_channel)
+    assert (guild.id, second.id) in retry._announced
+    retry.notices.stop(force=True)
+
+    held = _voice_notify(store, clock, tmp_path / "held.json")
+    member = fake_member("Held", 23)
+    voice = fake_voice_channel(channel_id=71, members=[member], guild=guild)
+    guild.voice_channels = [voice]
+    held.bot.guilds = [guild]
+    await _update(held, member, None, voice)
+    guild.unavailable = True
+    voice.members = []
+    await held.on_ready()
+    assert (guild.id, member.id) in held._announced
+    assert held.notices.live(FEATURE_VOICE, guild.id, str(member.id)) is not None
+    held.notices.stop(force=True)
+
+    notices = tmp_path / "broken_notices.json"
+    sessions = notices.with_name("voice_sessions.json")
+    sessions.write_text("{", encoding="utf-8")
+    broken = _voice_notify(store, clock, notices)
+    person = fake_member("Person", 24)
+    somewhere = fake_voice_channel(channel_id=72, members=[person], guild=guild)
+    await _update(broken, person, None, somewhere)
+    assert sessions.read_text(encoding="utf-8") == "{"
+    broken.notices.stop(force=True)

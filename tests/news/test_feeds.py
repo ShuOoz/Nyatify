@@ -1,25 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from fetch import BookmarkStore, FetchError
-from news.feeds import (
-    Fetcher,
-    PullResult,
-    _split_items,
-    catch_up_items,
-    deliver,
-    pull_locked,
-)
-from news.follows import (
-    FEATURE_GAME,
-    FEATURE_TICKET,
-)
+from news.drafts import word_fingerprint
+from news.feeds import Fetcher, PullResult, _reopen_edits, _split_items, pull_locked
 from news.source.post.bilibili.app import _DYN_EPOCH, grpc_frame, grpc_message
 from news.source.post.bilibili.browser import BILI_NAV_URL, clear_wbi_key
 import news.source.post.bilibili.dynamics as dynamics
@@ -27,14 +16,7 @@ from news.source.post.bilibili.dynamics import QUIET
 from news.source.post.bilibili.protobuf import decode_message, encode_message
 from news.source.post.bilibili.web import BILI_CARD_URL, BILI_OPUS_URL, BILI_SPI_URL
 from news.source.post.weibo.mblog import WEIBO_INDEX_URL
-from news.source.registry import FLOOD_CAP
-from tests.helpers import (
-    FakeHttp,
-    ScriptedFetcher,
-    fetched_item,
-    scratch,
-    utc,
-)
+from tests.helpers import FakeHttp, fetched_item, scratch, utc
 from tests.news.support import reset_saved
 
 WEIBO = "1195230310"
@@ -169,19 +151,15 @@ def _ids(items) -> list[str]:
     return [item.item_id for item in items]
 
 
-async def test_pull_names_seeds_and_delivery(monkeypatch, tmp_path):
+async def test_pull_names_seeds_and_faults(monkeypatch, tmp_path):
     case_first_pull_backfill_posts_the_last_week()
+    case_an_edit_reopens_and_a_repeat_does_not()
     await case_index_uses_the_author_name(scratch(tmp_path, "author"))
-    reset_saved()
-    await case_ticket_follow_gets_the_last_week_beside_a_game_follow(
-        scratch(tmp_path, "ticket_week")
-    )
     reset_saved()
     await case_pull_seeds_names_skips_and_dupes(scratch(tmp_path, "seeds"))
     reset_saved()
     with monkeypatch.context() as patched:
-        await case_pull_faults_catch_up_and_flood(scratch(tmp_path, "faults"), patched)
-    await case_ticket_backlog_stops_at_the_flood_cap(scratch(tmp_path, "backlog"))
+        await case_pull_faults_and_a_locked_retry(scratch(tmp_path, "faults"), patched)
 
 
 async def test_the_catch_up_line_is_one_bookmark(tmp_path):
@@ -234,80 +212,23 @@ def case_first_pull_backfill_posts_the_last_week():
         {"old", "undated"},
     )
     assert [item.item_id for item in again] == ["recent"]
+    closed, _, _, seed_ids = _split_items([recent, ahead, old, undated], now, None)
+    assert closed == []
+    assert seed_ids == ["recent", "ahead", "old", "undated"]
 
 
-async def case_ticket_follow_gets_the_last_week_beside_a_game_follow(tmp_path):
-    now = utc(2026, 9, 25, 12)
-    recent_at = now - timedelta(days=2)
-    old_at = now - timedelta(days=30)
-    recent_id = _dyn_id(recent_at)
-    old_id = _dyn_id(old_at)
-    fetcher = _fetcher(
-        tmp_path,
-        {},
-        bili_post=_bili_post(
-            {
-                BILI: _space(
-                    ("On sale", "https://example.test/sale", recent_id, "Tickets"),
-                    ("Ancient", "https://example.test/old", old_id, "Long ago"),
-                )
-            }
-        ),
-        now=now,
-    )
-    got = await fetcher.pull("bilibili", BILI)
-    assert _ids(got.new) == []
-    assert fetcher.bookmarks.is_seeded("bilibili", BILI)
-
-    sent: list[tuple[list[tuple[int, str]], str]] = []
-
-    async def missed(_platform, _account, live, item):
-        sent.append((list(live), item.item_id))
-        return 0
-
-    game = [(1, FEATURE_GAME)]
-    live = [(1, FEATURE_GAME), (2, FEATURE_TICKET)]
-    assert await deliver(fetcher, "bilibili", BILI, game, got, missed) == 0
-    assert sent == []
-    assert await deliver(fetcher, "bilibili", BILI, live, got, missed) == 0
-    assert sent == [([(2, FEATURE_TICKET)], recent_id)]
-
-    async def posted(_platform, _account, live, item):
-        sent.append((list(live), item.item_id))
-        fetcher.mark_delivered(
-            "bilibili", BILI, item.item_id, [f"{guild_id}:{topic}" for guild_id, topic in live]
-        )
-        return 1
-
-    assert await deliver(fetcher, "bilibili", BILI, live, got, posted) == 1
-    assert fetcher.delivered_refs("bilibili", BILI, recent_id) == {"2:ticket"}
-    again = await fetcher.pull("bilibili", BILI)
-    assert recent_id in _ids(again.visible)
-    assert catch_up_items(fetcher, "bilibili", BILI, live, again, set(), 5, now=now) == []
-
-
-
-
-
-
-async def case_ticket_backlog_stops_at_the_flood_cap(tmp_path):
-    now = utc(2026, 9, 25, 12)
-    items = [
-        fetched_item(f"guid-{n}", occurred_at=now - timedelta(hours=n))
-        for n in range(FLOOD_CAP + 1)
-    ]
-    got = PullResult(None, [], items=items)
-    seen: list[str] = []
-
-    async def announce(_platform, _account, _live, item):
-        seen.append(item.item_id)
-        return 1
-
-    posted = await deliver(
-        _fetcher(tmp_path, {}, now=now), "bilibili", BILI, [(2, FEATURE_TICKET)], got, announce
-    )
-    assert posted == FLOOD_CAP
-    assert seen == [f"guid-{n}" for n in range(FLOOD_CAP, 0, -1)]
+def case_an_edit_reopens_and_a_repeat_does_not():
+    same = fetched_item("post", title="Notice", text="same")
+    edited = fetched_item("post", title="Notice", text="changed")
+    fresh = fetched_item("fresh", title="New", text="hello")
+    words = {"post": word_fingerprint(same)}
+    opened = PullResult(None, [fresh], items=[fresh, same])
+    assert [item.item_id for item in _reopen_edits(words, opened).new] == ["fresh"]
+    changed = PullResult(None, [], items=[edited])
+    assert [item.text for item in _reopen_edits(words, changed).new] == ["changed"]
+    assert _reopen_edits({}, changed).new == []
+    already = PullResult(None, [edited], items=[edited])
+    assert [item.item_id for item in _reopen_edits(words, already).new] == ["post"]
 
 
 async def case_pull_seeds_names_skips_and_dupes(tmp_path):
@@ -321,7 +242,10 @@ async def case_pull_seeds_names_skips_and_dupes(tmp_path):
             }
         ),
     )
-    assert (await named.pull("bilibili", "1")).name == "Studio"
+    opened = await named.pull("bilibili", "1")
+    assert opened.name == "Studio"
+    assert opened.opening
+    assert not (await named.pull("bilibili", "1")).opening
     assert (await named.pull("bilibili", "2")).name == "Other"
 
     weibo = _fetcher(tmp_path, {}, weibo_call=_weibo_call({WEIBO: {"ok": 1, "data": {"cards": []}}}))
@@ -438,15 +362,6 @@ async def case_the_catch_up_line_leaves_that_page_as_history(tmp_path):
     assert newer not in fetcher.bookmarks.seen_ids("bilibili", BILI)
     assert fetcher.bookmarks.catch_line("bilibili", BILI) == (1001, when)
 
-    sent: list[str] = []
-
-    async def announce(_platform, _account, _live, item):
-        sent.append(item.item_id)
-        return 1
-
-    await deliver(fetcher, "bilibili", BILI, [(2, FEATURE_TICKET)], posted, announce)
-    assert recent not in sent
-
     state["space"] = []
     state["opus"] = [{"opus_id": "1003", "content": "Later title"}]
     token = dynamics._mode.set("visitor")
@@ -489,58 +404,10 @@ async def case_unfollowing_drops_the_line_so_a_readd_starts_clean(tmp_path):
     assert _ids(posted.new) == ["201"]
 
 
-def test_catch_line_stays_on_the_bookmark(tmp_path):
-    path = tmp_path / "old.json"
-    when = "2026-10-04T12:00:00+00:00"
-    later = utc(2026, 10, 5, 12)
-    earlier = utc(2026, 10, 1, 12)
-    old = {
-        "bilibili:1": {
-            "delivered": {"1001": ["1:game"]},
-            "ids": ["1001"],
-            "aliases": {"av10": "1001"},
-            "floor": "1001",
-            "since": when,
-        }
-    }
-    path.write_text(json.dumps(old))
-    store = BookmarkStore(path)
-    assert store.seen_ids("bilibili", "1") == {"1001"}
-    assert store.catch_line("bilibili", "1")[0] == 1001
-    saved = json.loads(path.read_text())["bilibili:1"]
-    assert "aliases" not in saved
-    assert saved["floor"] == "1001"
-
-    store.remember_line("bilibili", "1", "1002", later)
-    assert store.catch_line("bilibili", "1")[0] == 1001
-    store.remember("bilibili", "1", ["1002"])
-    assert "1001" in store.seen_ids("bilibili", "1")
-    assert store.delivered_refs("bilibili", "1", "1001") == {"1:game"}
-
-    store.remember("bilibili", "9", ["3"])
-    store.remember_line("bilibili", "9", "3", later)
-    store.move("bilibili", "1", "9")
-    assert store.catch_line("bilibili", "1") == (None, None)
-    assert store.catch_line("bilibili", "9")[0] == 3
-
-    store.remember("bilibili", "8", ["1"])
-    store.remember_line("bilibili", "8", "50", earlier)
-    store.remember("bilibili", "7", ["2"])
-    store.remember_line("bilibili", "7", "80", later)
-    store.move("bilibili", "7", "8")
-    assert store.catch_line("bilibili", "8")[0] == 50
-
-    assert store.keep_only([("bilibili", "8")]) == 1
-    assert store.catch_line("bilibili", "9") == (None, None)
-    assert BookmarkStore(path).catch_line("bilibili", "8")[0] == 50
-
-
-async def case_pull_faults_catch_up_and_flood(tmp_path, monkeypatch):
+async def case_pull_faults_and_a_locked_retry(tmp_path, monkeypatch):
     await case_unknown_source_raises(tmp_path)
     await case_bilibili_space_error_raises(tmp_path)
-    case_catch_up_posts_only_when_a_guild_missed_a_delivered_item()
     case_stored_shows_lists_a_delivered_ticket(tmp_path)
-    await case_deliver_stops_at_the_flood_cap()
     await case_pull_locked_retries_after_a_pause(monkeypatch)
 
 async def case_unknown_source_raises(tmp_path):
@@ -556,21 +423,6 @@ async def case_bilibili_space_error_raises(tmp_path):
     fetcher = _fetcher(tmp_path, {}, bili_post=boom)
     with pytest.raises(FetchError, match="-352"):
         await fetcher.load("bilibili", BILI)
-
-
-def case_catch_up_posts_only_when_a_guild_missed_a_delivered_item():
-    item = fetched_item("guid-1")
-    got = PullResult(None, [], [item], items=[item])
-    empty = ScriptedFetcher()
-    assert (
-        catch_up_items(empty, "weibo", WEIBO, [(1, "game")], got, set(), 5) == []
-    )
-    seen = ScriptedFetcher()
-    seen.mark_delivered("weibo", WEIBO, "guid-1", ["1:game"])
-    found = catch_up_items(
-        seen, "weibo", WEIBO, [(1, "game"), (2, "game")], got, set(), 5
-    )
-    assert _ids(found) == ["guid-1"]
 
 
 def case_stored_shows_lists_a_delivered_ticket(tmp_path):
@@ -602,20 +454,4 @@ async def case_pull_locked_retries_after_a_pause(monkeypatch):
     )
     assert waits == [2, 2]
     assert got.team_id == "1"
-
-
-async def case_deliver_stops_at_the_flood_cap():
-    items = [fetched_item(f"guid-{n}") for n in range(6)]
-    got = PullResult(None, items)
-    seen = []
-
-    async def announce(platform, account, live, item):
-        seen.append(item.item_id)
-        return 1
-
-    posted = await deliver(
-        ScriptedFetcher(), "weibo", WEIBO, [(1, "game")], got, announce
-    )
-    assert posted == 5
-    assert seen == [f"guid-{n}" for n in range(5, 0, -1)]
 

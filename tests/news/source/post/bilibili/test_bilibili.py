@@ -4,11 +4,13 @@ import pytest
 
 from config import settings as live
 from fetch import FetchError
+from news.follows import FEATURE_GAME, FEATURE_OTHER, FEATURE_TICKET
 from news.source.post.bilibili import (
     VISITOR_COOKIE_UID,
     BiliCookies,
     bili_cookie_uid,
     bili_uid,
+    block_live_room,
     fetch_items,
     is_bili_login_cookie,
     parse_account,
@@ -19,8 +21,17 @@ from news.source.post.bilibili.app import grpc_frame
 from news.source.post.bilibili.browser import BILI_NAV_URL, clear_wbi_key, fetch_wbi_key
 from news.source.post.bilibili.protobuf import encode_message
 from news.source.post.common import COOKIE_SKIP_SECONDS
+from tests.helpers import fetched_item
 
 _LOGIN = "SESSDATA=s; bili_jct=j; DedeUserID=9"
+
+
+def test_a_live_room_stays_off_game_and_ticket():
+    live = fetched_item(title="今晚开播", text="https://live.bilibili.com/99")
+    assert block_live_room(live, FEATURE_GAME)
+    assert block_live_room(live, FEATURE_TICKET)
+    assert not block_live_room(live, FEATURE_OTHER)
+    assert not block_live_room(fetched_item(), FEATURE_GAME)
 
 
 async def test_bilibili_cookie(tmp_path, monkeypatch):

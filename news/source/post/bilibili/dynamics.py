@@ -19,7 +19,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fetch import FetchError, FetchedItem, http_url
-from news.follows import FEATURE_GAME
 from news.source.post.common import pixel
 
 log = logging.getLogger(__name__)
@@ -163,8 +162,14 @@ def is_paragraph(text: str) -> bool:
     flat = " ".join(text.split())
     return sum(2 if "\u4e00" <= char <= "\u9fff" else 1 for char in flat) > _TITLE_SPAN
 
-def shows_list_post(item: FetchedItem, topic: str) -> bool:
-    return LIST not in item.tags or topic == FEATURE_GAME
+def is_quiet(item: FetchedItem) -> bool:
+    return QUIET in item.tags
+
+
+def catch_floor(items) -> str | None:
+    """Highest numeric id on a first pull. That page is history, not a card."""
+    numbers = [int(item.item_id) for item in items if item.item_id and str(item.item_id).isdigit()]
+    return str(max(numbers)) if numbers else None
 
 
 def for_model(item: FetchedItem) -> FetchedItem:
@@ -378,19 +383,46 @@ async def fetch_dynamics(
     post: Any | None = None, buvid: str = "", seen: Collection[str] = (),
 ) -> tuple[str | None, list[FetchedItem]]:
     """One planned read. A blank list is an empty result."""
-    from .app import fetch_app_page, saved_buvid
+    from .app import saved_buvid
 
     mode = _mode.get()
     if mode in {"login", "visitor"}:
         return await _website(account, cookie=cookie, call=call, seen=seen, login=mode == "login")
     try:
-        name, items = await fetch_app_page(
-            account, buvid=(buvid or "").strip() or saved_buvid(), post=post
+        name, items = await _app_pages(
+            account, buvid=(buvid or "").strip() or saved_buvid(), post=post, seen=seen
         )
     except FetchError as exc:
         space_stats.first(account, f"http {exc.status}" if exc.status else "error")
         raise
     return _finish(account, name, items, "first")
+
+
+async def _app_pages(
+    account: str, *, buvid: str, post: Any | None, seen: Collection[str],
+) -> tuple[str | None, list[FetchedItem]]:
+    """Newer pages until a bookmark, a short page, or a repeated page."""
+    from .app import fetch_app_page
+
+    seen_ids = {str(item) for item in seen if item}
+    name = None
+    got: list[FetchedItem] = []
+    have: set[str] = set()
+    full = 0
+    for page in range(1, 9):
+        page_name, items = await fetch_app_page(account, buvid=buvid, post=post, page=page)
+        name = name or page_name
+        fresh = [item for item in items if item.item_id not in have]
+        if not fresh:
+            break
+        got.extend(fresh)
+        have.update(item.item_id for item in fresh)
+        overlapped = any(item.item_id in seen_ids for item in items)
+        if not seen_ids or overlapped or (full and len(fresh) < full):
+            break
+        full = len(fresh)
+    return name, got
+
 
 async def _website(
     account: str, *, cookie: str, call: Any | None, seen: Collection[str], login: bool,

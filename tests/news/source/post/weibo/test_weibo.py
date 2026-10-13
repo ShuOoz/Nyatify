@@ -95,7 +95,9 @@ def case_accounts_names_and_skips():
     assert display_name("Studio的微博") == "Studio"
     assert display_name(" Studio ") == "Studio"
     assert should_skip(_post(platform="bilibili", text="转发微博")) is None
-    assert should_skip(_post(text="转发微博")) is True
+    assert should_skip(_post(text="转发微博")) is None
+    assert should_skip(_post(text="hello //@someone")) is None
+    assert should_skip(_post(tags=("repost",))) is True
     assert should_skip(_post(text="hello")) is None
     fault = feed_fault(FetchError("HTTP 403 from api", status=403))
     assert fault is not None and fault.cookie
@@ -129,7 +131,7 @@ async def case_fetch_items_mints_visitor_when_empty(monkeypatch):
         minted.append(True)
         return "SUB=_2AkGuest; SUBP=p"
 
-    async def fetch(_account, *, cookie="", call=None):
+    async def fetch(_account, *, cookie="", call=None, seen=()):
         cookies.append(cookie)
         return "Studio", [], "", ""
 
@@ -161,7 +163,7 @@ async def case_each_proxy_keeps_its_own_guest(monkeypatch):
         minted.append(door)
         return f"SUB=_2Ak{door[-1]}; SUBP=p"
 
-    async def fetch(_account, *, cookie="", call=None):
+    async def fetch(_account, *, cookie="", call=None, seen=()):
         cookies.append(cookie)
         return "Studio", [], "", ""
 
@@ -200,7 +202,7 @@ async def case_next_pull_uses_the_reminted_weibo_cookie(monkeypatch):
     async def mint(*, request=None):
         return fresh
 
-    async def fetch(_account, *, cookie="", call=None):
+    async def fetch(_account, *, cookie="", call=None, seen=()):
         sent.append(cookie)
         if cookie.startswith("SUB=_2AkStale"):
             raise FetchError("Weibo cookie expired", status=403)
@@ -226,7 +228,7 @@ async def case_fetch_items_does_not_remint_a_live_block(monkeypatch):
         raise AssertionError("a live block must not remint")
 
     async def blocked(status: int, message: str):
-        async def fetch(_account, *, cookie="", call=None):
+        async def fetch(_account, *, cookie="", call=None, seen=()):
             raise FetchError(message, status=status)
 
         monkeypatch.setattr(source, "fetch_mblogs", fetch)
