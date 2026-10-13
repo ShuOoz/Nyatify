@@ -12,15 +12,10 @@ from pathlib import Path
 import discord
 from discord.ext import commands
 
-from announce import (
-    ACCENT_COLOR,
-    DEFAULT_NOTICES_PATH,
-    NotifyCog,
-    TemporaryNotice,
-    send_announcement,
-)
+from announce import ACCENT_COLOR, NotifyCog, send_announcement
+from notice import DEFAULT_NOTICES_PATH, TemporaryNotice
 from config import write_text_atomic
-from guild_config import (
+from guild import (
     GuildConfig,
     guild_config as default_guild_config,
     parse_snowflake,
@@ -37,7 +32,8 @@ RECONNECT_GRACE_SECONDS = 45.0
 # How long a voice-start message stays in the announce channel.
 # Expiry only removes the card. It does not allow another ping while they stay in voice.
 NOTICE_TTL_SECONDS = 15 * 60
-# Inbox ping. Posted as its own message so Discord does not flatten the card.
+# Inbox ping, unquoted so the alert is this line. Its own message so Discord
+# does not flatten the card.
 VOICE_NOTICE_CONTENT = "@everyone !!! OH MY GAH !!!"
 VOICE_NOTICE_TITLE = "Hello Every Nya ฅ^•ﻌ•^ฅ"
 # Embed image URLs only (no local files). Append to this tuple to extend the shuffle.
@@ -446,6 +442,7 @@ class VoiceNotify(NotifyCog):
             FEATURE_VOICE,
             content=VOICE_NOTICE_CONTENT,
             embed=embed,
+            quote=False,
             delete_after=self._ttl_seconds,
             notice_key=member.id,
             extra={

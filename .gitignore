@@ -2,7 +2,9 @@
 config.txt
 
 # Per-server settings
-data/
+data/*
+!data/sports_aliases.json
+!data/esports_aliases.json
 .env
 .env.*
 

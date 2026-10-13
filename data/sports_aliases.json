@@ -1,0 +1,1561 @@
+{
+  "American Football": {
+    "49ers": {
+      "name": "San Francisco 49ers"
+    },
+    "america's team": {
+      "name": "Dallas Cowboys"
+    },
+    "arizona cardinals": {
+      "name": "Arizona Cardinals"
+    },
+    "atlanta falcons": {
+      "name": "Atlanta Falcons"
+    },
+    "baltimore ravens": {
+      "name": "Baltimore Ravens"
+    },
+    "bears": {
+      "name": "Chicago Bears"
+    },
+    "bengals": {
+      "name": "Cincinnati Bengals"
+    },
+    "bills": {
+      "name": "Buffalo Bills"
+    },
+    "broncos": {
+      "name": "Denver Broncos"
+    },
+    "browns": {
+      "name": "Cleveland Browns"
+    },
+    "buccaneers": {
+      "name": "Tampa Bay Buccaneers"
+    },
+    "bucs": {
+      "name": "Tampa Bay Buccaneers"
+    },
+    "buffalo bills": {
+      "name": "Buffalo Bills"
+    },
+    "cardinals": {
+      "name": "Arizona Cardinals"
+    },
+    "carolina panthers": {
+      "name": "Carolina Panthers"
+    },
+    "chargers": {
+      "name": "Los Angeles Chargers"
+    },
+    "chicago bears": {
+      "name": "Chicago Bears"
+    },
+    "chiefs": {
+      "name": "Kansas City Chiefs"
+    },
+    "cincinnati bengals": {
+      "name": "Cincinnati Bengals"
+    },
+    "cleveland browns": {
+      "name": "Cleveland Browns"
+    },
+    "colts": {
+      "name": "Indianapolis Colts"
+    },
+    "commanders": {
+      "name": "Washington Commanders"
+    },
+    "cowboys": {
+      "name": "Dallas Cowboys"
+    },
+    "dallas cowboys": {
+      "name": "Dallas Cowboys"
+    },
+    "denver broncos": {
+      "name": "Denver Broncos"
+    },
+    "detroit lions": {
+      "name": "Detroit Lions"
+    },
+    "dolphins": {
+      "name": "Miami Dolphins"
+    },
+    "eagles": {
+      "name": "Philadelphia Eagles"
+    },
+    "falcons": {
+      "name": "Atlanta Falcons"
+    },
+    "giants": {
+      "name": "New York Giants"
+    },
+    "green bay packers": {
+      "name": "Green Bay Packers"
+    },
+    "houston texans": {
+      "name": "Houston Texans"
+    },
+    "indianapolis colts": {
+      "name": "Indianapolis Colts"
+    },
+    "jacksonville jaguars": {
+      "name": "Jacksonville Jaguars"
+    },
+    "jags": {
+      "name": "Jacksonville Jaguars"
+    },
+    "jaguars": {
+      "name": "Jacksonville Jaguars"
+    },
+    "jets": {
+      "name": "New York Jets"
+    },
+    "kansas city chiefs": {
+      "name": "Kansas City Chiefs"
+    },
+    "kc chiefs": {
+      "name": "Kansas City Chiefs"
+    },
+    "la chargers": {
+      "name": "Los Angeles Chargers"
+    },
+    "la rams": {
+      "name": "Los Angeles Rams"
+    },
+    "las vegas raiders": {
+      "name": "Las Vegas Raiders"
+    },
+    "lions": {
+      "name": "Detroit Lions"
+    },
+    "los angeles chargers": {
+      "name": "Los Angeles Chargers"
+    },
+    "los angeles rams": {
+      "name": "Los Angeles Rams"
+    },
+    "miami dolphins": {
+      "name": "Miami Dolphins"
+    },
+    "minnesota vikings": {
+      "name": "Minnesota Vikings"
+    },
+    "new england patriots": {
+      "name": "New England Patriots"
+    },
+    "new orleans saints": {
+      "name": "New Orleans Saints"
+    },
+    "new york giants": {
+      "name": "New York Giants"
+    },
+    "new york jets": {
+      "name": "New York Jets"
+    },
+    "niners": {
+      "name": "San Francisco 49ers"
+    },
+    "ny giants": {
+      "name": "New York Giants"
+    },
+    "ny jets": {
+      "name": "New York Jets"
+    },
+    "oakland raiders": {
+      "name": "Las Vegas Raiders"
+    },
+    "packers": {
+      "name": "Green Bay Packers"
+    },
+    "panthers": {
+      "name": "Carolina Panthers"
+    },
+    "patriots": {
+      "name": "New England Patriots"
+    },
+    "pats": {
+      "name": "New England Patriots"
+    },
+    "philadelphia eagles": {
+      "name": "Philadelphia Eagles"
+    },
+    "philly eagles": {
+      "name": "Philadelphia Eagles"
+    },
+    "pittsburgh steelers": {
+      "name": "Pittsburgh Steelers"
+    },
+    "raiders": {
+      "name": "Las Vegas Raiders"
+    },
+    "rams": {
+      "name": "Los Angeles Rams"
+    },
+    "ravens": {
+      "name": "Baltimore Ravens"
+    },
+    "saints": {
+      "name": "New Orleans Saints"
+    },
+    "san francisco 49ers": {
+      "name": "San Francisco 49ers"
+    },
+    "seahawks": {
+      "name": "Seattle Seahawks"
+    },
+    "seattle seahawks": {
+      "name": "Seattle Seahawks"
+    },
+    "sf 49ers": {
+      "name": "San Francisco 49ers"
+    },
+    "steelers": {
+      "name": "Pittsburgh Steelers"
+    },
+    "tampa bay buccaneers": {
+      "name": "Tampa Bay Buccaneers"
+    },
+    "tennessee titans": {
+      "name": "Tennessee Titans"
+    },
+    "texans": {
+      "name": "Houston Texans"
+    },
+    "titans": {
+      "name": "Tennessee Titans"
+    },
+    "vikings": {
+      "name": "Minnesota Vikings"
+    },
+    "washington": {
+      "name": "Washington Commanders"
+    },
+    "washington commanders": {
+      "name": "Washington Commanders"
+    }
+  },
+  "Baseball": {
+    "a's": {
+      "name": "Athletics"
+    },
+    "angels": {
+      "name": "Los Angeles Angels"
+    },
+    "arizona diamondbacks": {
+      "name": "Arizona Diamondbacks"
+    },
+    "as": {
+      "name": "Athletics"
+    },
+    "astros": {
+      "name": "Houston Astros"
+    },
+    "athletics": {
+      "name": "Athletics"
+    },
+    "atlanta braves": {
+      "name": "Atlanta Braves"
+    },
+    "baltimore orioles": {
+      "name": "Baltimore Orioles"
+    },
+    "blue jays": {
+      "name": "Toronto Blue Jays"
+    },
+    "boston red sox": {
+      "name": "Boston Red Sox"
+    },
+    "braves": {
+      "name": "Atlanta Braves"
+    },
+    "brewers": {
+      "name": "Milwaukee Brewers"
+    },
+    "cardinals": {
+      "name": "St. Louis Cardinals"
+    },
+    "chicago cubs": {
+      "name": "Chicago Cubs"
+    },
+    "chicago white sox": {
+      "name": "Chicago White Sox"
+    },
+    "cincinnati reds": {
+      "name": "Cincinnati Reds"
+    },
+    "cleveland guardians": {
+      "name": "Cleveland Guardians"
+    },
+    "colorado rockies": {
+      "name": "Colorado Rockies"
+    },
+    "cubs": {
+      "name": "Chicago Cubs"
+    },
+    "dbacks": {
+      "name": "Arizona Diamondbacks"
+    },
+    "detroit tigers": {
+      "name": "Detroit Tigers"
+    },
+    "diamondbacks": {
+      "name": "Arizona Diamondbacks"
+    },
+    "dodgers": {
+      "name": "Los Angeles Dodgers"
+    },
+    "giants": {
+      "name": "San Francisco Giants"
+    },
+    "guardians": {
+      "name": "Cleveland Guardians"
+    },
+    "houston astros": {
+      "name": "Houston Astros"
+    },
+    "jays": {
+      "name": "Toronto Blue Jays"
+    },
+    "kansas city royals": {
+      "name": "Kansas City Royals"
+    },
+    "la angels": {
+      "name": "Los Angeles Angels"
+    },
+    "la dodgers": {
+      "name": "Los Angeles Dodgers"
+    },
+    "los angeles angels": {
+      "name": "Los Angeles Angels"
+    },
+    "los angeles dodgers": {
+      "name": "Los Angeles Dodgers"
+    },
+    "mariners": {
+      "name": "Seattle Mariners"
+    },
+    "marlins": {
+      "name": "Miami Marlins"
+    },
+    "mets": {
+      "name": "New York Mets"
+    },
+    "miami marlins": {
+      "name": "Miami Marlins"
+    },
+    "milwaukee brewers": {
+      "name": "Milwaukee Brewers"
+    },
+    "minnesota twins": {
+      "name": "Minnesota Twins"
+    },
+    "nationals": {
+      "name": "Washington Nationals"
+    },
+    "nats": {
+      "name": "Washington Nationals"
+    },
+    "new york mets": {
+      "name": "New York Mets"
+    },
+    "new york yankees": {
+      "name": "New York Yankees"
+    },
+    "ny mets": {
+      "name": "New York Mets"
+    },
+    "ny yankees": {
+      "name": "New York Yankees"
+    },
+    "oakland athletics": {
+      "name": "Athletics"
+    },
+    "orioles": {
+      "name": "Baltimore Orioles"
+    },
+    "padres": {
+      "name": "San Diego Padres"
+    },
+    "philadelphia phillies": {
+      "name": "Philadelphia Phillies"
+    },
+    "phillies": {
+      "name": "Philadelphia Phillies"
+    },
+    "pirates": {
+      "name": "Pittsburgh Pirates"
+    },
+    "pittsburgh pirates": {
+      "name": "Pittsburgh Pirates"
+    },
+    "rays": {
+      "name": "Tampa Bay Rays"
+    },
+    "red sox": {
+      "name": "Boston Red Sox"
+    },
+    "reds": {
+      "name": "Cincinnati Reds"
+    },
+    "rockies": {
+      "name": "Colorado Rockies"
+    },
+    "royals": {
+      "name": "Kansas City Royals"
+    },
+    "san diego padres": {
+      "name": "San Diego Padres"
+    },
+    "san francisco giants": {
+      "name": "San Francisco Giants"
+    },
+    "seattle mariners": {
+      "name": "Seattle Mariners"
+    },
+    "sf giants": {
+      "name": "San Francisco Giants"
+    },
+    "sox": {
+      "name": "Boston Red Sox"
+    },
+    "st louis cardinals": {
+      "name": "St. Louis Cardinals"
+    },
+    "st. louis cardinals": {
+      "name": "St. Louis Cardinals"
+    },
+    "tampa bay rays": {
+      "name": "Tampa Bay Rays"
+    },
+    "texas rangers": {
+      "name": "Texas Rangers"
+    },
+    "tigers": {
+      "name": "Detroit Tigers"
+    },
+    "toronto blue jays": {
+      "name": "Toronto Blue Jays"
+    },
+    "twins": {
+      "name": "Minnesota Twins"
+    },
+    "washington nationals": {
+      "name": "Washington Nationals"
+    },
+    "white sox": {
+      "name": "Chicago White Sox"
+    },
+    "yankees": {
+      "name": "New York Yankees"
+    }
+  },
+  "Basketball": {
+    "76ers": {
+      "name": "Philadelphia 76ers",
+      "id": "134113"
+    },
+    "aces": {
+      "name": "Las Vegas Aces"
+    },
+    "atlanta": {
+      "name": "Atlanta Hawks"
+    },
+    "atlanta hawks": {
+      "name": "Atlanta Hawks"
+    },
+    "blazers": {
+      "name": "Portland Trail Blazers"
+    },
+    "boston": {
+      "name": "Boston Celtics",
+      "id": "134860"
+    },
+    "boston celtics": {
+      "name": "Boston Celtics",
+      "id": "134860"
+    },
+    "brooklyn": {
+      "name": "Brooklyn Nets"
+    },
+    "brooklyn nets": {
+      "name": "Brooklyn Nets"
+    },
+    "bucks": {
+      "name": "Milwaukee Bucks"
+    },
+    "bulls": {
+      "name": "Chicago Bulls"
+    },
+    "celtics": {
+      "name": "Boston Celtics",
+      "id": "134860"
+    },
+    "charlotte": {
+      "name": "Charlotte Hornets"
+    },
+    "charlotte hornets": {
+      "name": "Charlotte Hornets"
+    },
+    "chicago": {
+      "name": "Chicago Bulls"
+    },
+    "chicago bulls": {
+      "name": "Chicago Bulls"
+    },
+    "clippers": {
+      "name": "Los Angeles Clippers"
+    },
+    "dallas": {
+      "name": "Dallas Mavericks"
+    },
+    "dallas mavericks": {
+      "name": "Dallas Mavericks"
+    },
+    "denver": {
+      "name": "Denver Nuggets"
+    },
+    "denver nuggets": {
+      "name": "Denver Nuggets"
+    },
+    "detroit": {
+      "name": "Detroit Pistons"
+    },
+    "detroit pistons": {
+      "name": "Detroit Pistons"
+    },
+    "dubs": {
+      "name": "Golden State Warriors"
+    },
+    "fever": {
+      "name": "Indiana Fever"
+    },
+    "golden state": {
+      "name": "Golden State Warriors"
+    },
+    "grizzlies": {
+      "name": "Memphis Grizzlies"
+    },
+    "gsw": {
+      "name": "Golden State Warriors"
+    },
+    "hawks": {
+      "name": "Atlanta Hawks"
+    },
+    "heat": {
+      "name": "Miami Heat"
+    },
+    "hornets": {
+      "name": "Charlotte Hornets"
+    },
+    "houston": {
+      "name": "Houston Rockets"
+    },
+    "houston rockets": {
+      "name": "Houston Rockets"
+    },
+    "indiana": {
+      "name": "Indiana Pacers"
+    },
+    "indiana fever": {
+      "name": "Indiana Fever"
+    },
+    "indiana pacers": {
+      "name": "Indiana Pacers"
+    },
+    "jazz": {
+      "name": "Utah Jazz"
+    },
+    "kings": {
+      "name": "Sacramento Kings"
+    },
+    "knicks": {
+      "name": "New York Knicks"
+    },
+    "la clippers": {
+      "name": "Los Angeles Clippers"
+    },
+    "la lakers": {
+      "name": "Los Angeles Lakers",
+      "id": "134867"
+    },
+    "lac": {
+      "name": "Los Angeles Clippers"
+    },
+    "lakers": {
+      "name": "Los Angeles Lakers",
+      "id": "134867"
+    },
+    "lal": {
+      "name": "Los Angeles Lakers",
+      "id": "134867"
+    },
+    "las vegas aces": {
+      "name": "Las Vegas Aces"
+    },
+    "liberty": {
+      "name": "New York Liberty"
+    },
+    "los angeles clippers": {
+      "name": "Los Angeles Clippers"
+    },
+    "los angeles lakers": {
+      "name": "Los Angeles Lakers",
+      "id": "134867"
+    },
+    "magic": {
+      "name": "Orlando Magic"
+    },
+    "mavericks": {
+      "name": "Dallas Mavericks"
+    },
+    "mavs": {
+      "name": "Dallas Mavericks"
+    },
+    "memphis": {
+      "name": "Memphis Grizzlies"
+    },
+    "memphis grizzlies": {
+      "name": "Memphis Grizzlies"
+    },
+    "miami": {
+      "name": "Miami Heat"
+    },
+    "miami heat": {
+      "name": "Miami Heat"
+    },
+    "milwaukee": {
+      "name": "Milwaukee Bucks"
+    },
+    "milwaukee bucks": {
+      "name": "Milwaukee Bucks"
+    },
+    "minnesota timberwolves": {
+      "name": "Minnesota Timberwolves"
+    },
+    "nets": {
+      "name": "Brooklyn Nets"
+    },
+    "new orleans pelicans": {
+      "name": "New Orleans Pelicans"
+    },
+    "new york knicks": {
+      "name": "New York Knicks"
+    },
+    "new york liberty": {
+      "name": "New York Liberty"
+    },
+    "nop": {
+      "name": "New Orleans Pelicans"
+    },
+    "nuggets": {
+      "name": "Denver Nuggets"
+    },
+    "ny knicks": {
+      "name": "New York Knicks"
+    },
+    "nyk": {
+      "name": "New York Knicks"
+    },
+    "okc": {
+      "name": "Oklahoma City Thunder"
+    },
+    "oklahoma city thunder": {
+      "name": "Oklahoma City Thunder"
+    },
+    "orlando": {
+      "name": "Orlando Magic"
+    },
+    "orlando magic": {
+      "name": "Orlando Magic"
+    },
+    "pacers": {
+      "name": "Indiana Pacers"
+    },
+    "pelicans": {
+      "name": "New Orleans Pelicans"
+    },
+    "philadelphia": {
+      "name": "Philadelphia 76ers",
+      "id": "134113"
+    },
+    "philadelphia 76ers": {
+      "name": "Philadelphia 76ers",
+      "id": "134113"
+    },
+    "philly": {
+      "name": "Philadelphia 76ers",
+      "id": "134113"
+    },
+    "phoenix": {
+      "name": "Phoenix Suns"
+    },
+    "phoenix suns": {
+      "name": "Phoenix Suns"
+    },
+    "pistons": {
+      "name": "Detroit Pistons"
+    },
+    "portland": {
+      "name": "Portland Trail Blazers"
+    },
+    "portland trail blazers": {
+      "name": "Portland Trail Blazers"
+    },
+    "raptors": {
+      "name": "Toronto Raptors"
+    },
+    "rockets": {
+      "name": "Houston Rockets"
+    },
+    "sacramento": {
+      "name": "Sacramento Kings"
+    },
+    "sacramento kings": {
+      "name": "Sacramento Kings"
+    },
+    "san antonio": {
+      "name": "San Antonio Spurs"
+    },
+    "san antonio spurs": {
+      "name": "San Antonio Spurs"
+    },
+    "seattle storm": {
+      "name": "Seattle Storm"
+    },
+    "sixers": {
+      "name": "Philadelphia 76ers",
+      "id": "134113"
+    },
+    "spurs": {
+      "name": "San Antonio Spurs"
+    },
+    "storm": {
+      "name": "Seattle Storm"
+    },
+    "suns": {
+      "name": "Phoenix Suns"
+    },
+    "thunder": {
+      "name": "Oklahoma City Thunder"
+    },
+    "timberwolves": {
+      "name": "Minnesota Timberwolves"
+    },
+    "toronto": {
+      "name": "Toronto Raptors"
+    },
+    "toronto raptors": {
+      "name": "Toronto Raptors"
+    },
+    "trail blazers": {
+      "name": "Portland Trail Blazers"
+    },
+    "utah": {
+      "name": "Utah Jazz"
+    },
+    "utah jazz": {
+      "name": "Utah Jazz"
+    },
+    "warriors": {
+      "name": "Golden State Warriors"
+    },
+    "washington": {
+      "name": "Washington Wizards"
+    },
+    "washington wizards": {
+      "name": "Washington Wizards"
+    },
+    "wizards": {
+      "name": "Washington Wizards"
+    },
+    "wolves": {
+      "name": "Minnesota Timberwolves"
+    }
+  },
+  "Ice Hockey": {
+    "anaheim ducks": {
+      "name": "Anaheim Ducks"
+    },
+    "avalanche": {
+      "name": "Colorado Avalanche"
+    },
+    "avs": {
+      "name": "Colorado Avalanche"
+    },
+    "blackhawks": {
+      "name": "Chicago Blackhawks"
+    },
+    "blue jackets": {
+      "name": "Columbus Blue Jackets"
+    },
+    "blues": {
+      "name": "St. Louis Blues"
+    },
+    "bolts": {
+      "name": "Tampa Bay Lightning"
+    },
+    "boston bruins": {
+      "name": "Boston Bruins"
+    },
+    "bruins": {
+      "name": "Boston Bruins"
+    },
+    "buffalo sabres": {
+      "name": "Buffalo Sabres"
+    },
+    "calgary flames": {
+      "name": "Calgary Flames"
+    },
+    "canadiens": {
+      "name": "Montreal Canadiens"
+    },
+    "canes": {
+      "name": "Carolina Hurricanes"
+    },
+    "canucks": {
+      "name": "Vancouver Canucks"
+    },
+    "capitals": {
+      "name": "Washington Capitals"
+    },
+    "caps": {
+      "name": "Washington Capitals"
+    },
+    "carolina hurricanes": {
+      "name": "Carolina Hurricanes"
+    },
+    "chicago blackhawks": {
+      "name": "Chicago Blackhawks"
+    },
+    "colorado avalanche": {
+      "name": "Colorado Avalanche"
+    },
+    "columbus blue jackets": {
+      "name": "Columbus Blue Jackets"
+    },
+    "dallas stars": {
+      "name": "Dallas Stars"
+    },
+    "detroit red wings": {
+      "name": "Detroit Red Wings"
+    },
+    "devils": {
+      "name": "New Jersey Devils"
+    },
+    "ducks": {
+      "name": "Anaheim Ducks"
+    },
+    "edmonton oilers": {
+      "name": "Edmonton Oilers"
+    },
+    "flames": {
+      "name": "Calgary Flames"
+    },
+    "florida panthers": {
+      "name": "Florida Panthers"
+    },
+    "flyers": {
+      "name": "Philadelphia Flyers"
+    },
+    "golden knights": {
+      "name": "Vegas Golden Knights"
+    },
+    "habs": {
+      "name": "Montreal Canadiens"
+    },
+    "hawks": {
+      "name": "Chicago Blackhawks"
+    },
+    "hurricanes": {
+      "name": "Carolina Hurricanes"
+    },
+    "islanders": {
+      "name": "New York Islanders"
+    },
+    "isles": {
+      "name": "New York Islanders"
+    },
+    "jets": {
+      "name": "Winnipeg Jets"
+    },
+    "kings": {
+      "name": "Los Angeles Kings"
+    },
+    "knights": {
+      "name": "Vegas Golden Knights"
+    },
+    "kraken": {
+      "name": "Seattle Kraken"
+    },
+    "la kings": {
+      "name": "Los Angeles Kings"
+    },
+    "leafs": {
+      "name": "Toronto Maple Leafs"
+    },
+    "lightning": {
+      "name": "Tampa Bay Lightning"
+    },
+    "los angeles kings": {
+      "name": "Los Angeles Kings"
+    },
+    "maple leafs": {
+      "name": "Toronto Maple Leafs"
+    },
+    "minnesota wild": {
+      "name": "Minnesota Wild"
+    },
+    "montreal": {
+      "name": "Montreal Canadiens"
+    },
+    "montreal canadiens": {
+      "name": "Montreal Canadiens"
+    },
+    "nashville predators": {
+      "name": "Nashville Predators"
+    },
+    "new jersey devils": {
+      "name": "New Jersey Devils"
+    },
+    "new york islanders": {
+      "name": "New York Islanders"
+    },
+    "new york rangers": {
+      "name": "New York Rangers"
+    },
+    "ny rangers": {
+      "name": "New York Rangers"
+    },
+    "oilers": {
+      "name": "Edmonton Oilers"
+    },
+    "ottawa senators": {
+      "name": "Ottawa Senators"
+    },
+    "panthers": {
+      "name": "Florida Panthers"
+    },
+    "penguins": {
+      "name": "Pittsburgh Penguins"
+    },
+    "pens": {
+      "name": "Pittsburgh Penguins"
+    },
+    "philadelphia flyers": {
+      "name": "Philadelphia Flyers"
+    },
+    "pittsburgh penguins": {
+      "name": "Pittsburgh Penguins"
+    },
+    "predators": {
+      "name": "Nashville Predators"
+    },
+    "preds": {
+      "name": "Nashville Predators"
+    },
+    "rangers": {
+      "name": "New York Rangers"
+    },
+    "red wings": {
+      "name": "Detroit Red Wings"
+    },
+    "sabres": {
+      "name": "Buffalo Sabres"
+    },
+    "san jose sharks": {
+      "name": "San Jose Sharks"
+    },
+    "seattle kraken": {
+      "name": "Seattle Kraken"
+    },
+    "senators": {
+      "name": "Ottawa Senators"
+    },
+    "sens": {
+      "name": "Ottawa Senators"
+    },
+    "sharks": {
+      "name": "San Jose Sharks"
+    },
+    "st louis blues": {
+      "name": "St. Louis Blues"
+    },
+    "st. louis blues": {
+      "name": "St. Louis Blues"
+    },
+    "stars": {
+      "name": "Dallas Stars"
+    },
+    "tampa bay lightning": {
+      "name": "Tampa Bay Lightning"
+    },
+    "toronto maple leafs": {
+      "name": "Toronto Maple Leafs"
+    },
+    "utah": {
+      "name": "Utah Hockey Club"
+    },
+    "utah hockey club": {
+      "name": "Utah Hockey Club"
+    },
+    "vancouver canucks": {
+      "name": "Vancouver Canucks"
+    },
+    "vegas golden knights": {
+      "name": "Vegas Golden Knights"
+    },
+    "vgk": {
+      "name": "Vegas Golden Knights"
+    },
+    "washington capitals": {
+      "name": "Washington Capitals"
+    },
+    "wild": {
+      "name": "Minnesota Wild"
+    },
+    "winnipeg jets": {
+      "name": "Winnipeg Jets"
+    }
+  },
+  "Soccer": {
+    "ac milan": {
+      "name": "AC Milan",
+      "id": "133667"
+    },
+    "afc": {
+      "name": "Arsenal",
+      "id": "133604"
+    },
+    "afc ajax": {
+      "name": "Ajax"
+    },
+    "ajax": {
+      "name": "Ajax"
+    },
+    "al hilal": {
+      "name": "Al Hilal"
+    },
+    "al nassr": {
+      "name": "Al-Nassr"
+    },
+    "al-hilal": {
+      "name": "Al Hilal"
+    },
+    "al-nassr": {
+      "name": "Al-Nassr"
+    },
+    "arsenal": {
+      "name": "Arsenal",
+      "id": "133604"
+    },
+    "as monaco": {
+      "name": "Monaco"
+    },
+    "as roma": {
+      "name": "AS Roma"
+    },
+    "aston villa": {
+      "name": "Aston Villa"
+    },
+    "atalanta": {
+      "name": "Atalanta"
+    },
+    "athletic": {
+      "name": "Athletic Club"
+    },
+    "athletic bilbao": {
+      "name": "Athletic Club"
+    },
+    "athletic club": {
+      "name": "Athletic Club"
+    },
+    "atleti": {
+      "name": "Atletico Madrid"
+    },
+    "atletico madrid": {
+      "name": "Atletico Madrid"
+    },
+    "atlético madrid": {
+      "name": "Atletico Madrid"
+    },
+    "atm": {
+      "name": "Atletico Madrid"
+    },
+    "avfc": {
+      "name": "Aston Villa"
+    },
+    "barca": {
+      "name": "Barcelona",
+      "id": "133739"
+    },
+    "barcelona": {
+      "name": "Barcelona",
+      "id": "133739"
+    },
+    "barça": {
+      "name": "Barcelona",
+      "id": "133739"
+    },
+    "bayer leverkusen": {
+      "name": "Bayer Leverkusen"
+    },
+    "bayern": {
+      "name": "Bayern Munich",
+      "id": "133664"
+    },
+    "bayern munich": {
+      "name": "Bayern Munich",
+      "id": "133664"
+    },
+    "benfica": {
+      "name": "Benfica"
+    },
+    "besiktas": {
+      "name": "Besiktas"
+    },
+    "beşiktaş": {
+      "name": "Besiktas"
+    },
+    "bianconeri": {
+      "name": "Juventus"
+    },
+    "bilbao": {
+      "name": "Athletic Club"
+    },
+    "blaugrana": {
+      "name": "Barcelona",
+      "id": "133739"
+    },
+    "blues": {
+      "name": "Chelsea"
+    },
+    "boca": {
+      "name": "Boca Juniors"
+    },
+    "boca juniors": {
+      "name": "Boca Juniors"
+    },
+    "borussia": {
+      "name": "Borussia Dortmund"
+    },
+    "bournemouth": {
+      "name": "Bournemouth"
+    },
+    "brentford": {
+      "name": "Brentford"
+    },
+    "brighton": {
+      "name": "Brighton"
+    },
+    "brighton and hove albion": {
+      "name": "Brighton"
+    },
+    "bvb": {
+      "name": "Borussia Dortmund"
+    },
+    "celtic": {
+      "name": "Celtic"
+    },
+    "celtic fc": {
+      "name": "Celtic"
+    },
+    "cfc": {
+      "name": "Chelsea"
+    },
+    "chelsea": {
+      "name": "Chelsea"
+    },
+    "citizens": {
+      "name": "Manchester City"
+    },
+    "city": {
+      "name": "Manchester City"
+    },
+    "colchoneros": {
+      "name": "Atletico Madrid"
+    },
+    "corinthians": {
+      "name": "Corinthians"
+    },
+    "coys": {
+      "name": "Tottenham",
+      "id": "133616"
+    },
+    "crystal palace": {
+      "name": "Crystal Palace"
+    },
+    "dortmund": {
+      "name": "Borussia Dortmund"
+    },
+    "everton": {
+      "name": "Everton"
+    },
+    "fc barcelona": {
+      "name": "Barcelona",
+      "id": "133739"
+    },
+    "fc bayern": {
+      "name": "Bayern Munich",
+      "id": "133664"
+    },
+    "fc inter": {
+      "name": "Inter Milan"
+    },
+    "fc porto": {
+      "name": "FC Porto"
+    },
+    "fcb": {
+      "name": "Barcelona",
+      "id": "133739"
+    },
+    "fenerbahce": {
+      "name": "Fenerbahce"
+    },
+    "fenerbahçe": {
+      "name": "Fenerbahce"
+    },
+    "feyenoord": {
+      "name": "Feyenoord"
+    },
+    "fiorentina": {
+      "name": "Fiorentina"
+    },
+    "flamengo": {
+      "name": "Flamengo"
+    },
+    "forest": {
+      "name": "Nottingham Forest"
+    },
+    "fulham": {
+      "name": "Fulham"
+    },
+    "galatasaray": {
+      "name": "Galatasaray"
+    },
+    "galaxy": {
+      "name": "LA Galaxy"
+    },
+    "gers": {
+      "name": "Rangers FC"
+    },
+    "giallorossi": {
+      "name": "AS Roma"
+    },
+    "glasgow rangers": {
+      "name": "Rangers FC"
+    },
+    "gunners": {
+      "name": "Arsenal",
+      "id": "133604"
+    },
+    "hammers": {
+      "name": "West Ham"
+    },
+    "hotspur": {
+      "name": "Tottenham",
+      "id": "133616"
+    },
+    "inter": {
+      "name": "Inter Milan"
+    },
+    "inter miami": {
+      "name": "Inter Miami"
+    },
+    "inter miami cf": {
+      "name": "Inter Miami"
+    },
+    "inter milan": {
+      "name": "Inter Milan"
+    },
+    "internazionale": {
+      "name": "Inter Milan"
+    },
+    "juve": {
+      "name": "Juventus"
+    },
+    "juventus": {
+      "name": "Juventus"
+    },
+    "la galaxy": {
+      "name": "LA Galaxy"
+    },
+    "lafc": {
+      "name": "Los Angeles FC"
+    },
+    "lazio": {
+      "name": "Lazio"
+    },
+    "leipzig": {
+      "name": "RB Leipzig"
+    },
+    "leverkusen": {
+      "name": "Bayer Leverkusen"
+    },
+    "lfc": {
+      "name": "Liverpool"
+    },
+    "liverpool": {
+      "name": "Liverpool"
+    },
+    "los angeles fc": {
+      "name": "Los Angeles FC"
+    },
+    "los blancos": {
+      "name": "Real Madrid"
+    },
+    "lyon": {
+      "name": "Lyon"
+    },
+    "madrid": {
+      "name": "Real Madrid"
+    },
+    "magpies": {
+      "name": "Newcastle United"
+    },
+    "man city": {
+      "name": "Manchester City"
+    },
+    "man united": {
+      "name": "Manchester United"
+    },
+    "man utd": {
+      "name": "Manchester United"
+    },
+    "manchester city": {
+      "name": "Manchester City"
+    },
+    "manchester united": {
+      "name": "Manchester United"
+    },
+    "manu": {
+      "name": "Manchester United"
+    },
+    "marseille": {
+      "name": "Marseille"
+    },
+    "mcfc": {
+      "name": "Manchester City"
+    },
+    "milan": {
+      "name": "AC Milan",
+      "id": "133667"
+    },
+    "monaco": {
+      "name": "Monaco"
+    },
+    "mufc": {
+      "name": "Manchester United"
+    },
+    "munich": {
+      "name": "Bayern Munich",
+      "id": "133664"
+    },
+    "napoli": {
+      "name": "Napoli"
+    },
+    "nerazzurri": {
+      "name": "Inter Milan"
+    },
+    "newcastle": {
+      "name": "Newcastle United"
+    },
+    "newcastle united": {
+      "name": "Newcastle United"
+    },
+    "nottingham forest": {
+      "name": "Nottingham Forest"
+    },
+    "nufc": {
+      "name": "Newcastle United"
+    },
+    "ol": {
+      "name": "Lyon"
+    },
+    "old lady": {
+      "name": "Juventus"
+    },
+    "olympiacos": {
+      "name": "Olympiacos"
+    },
+    "om": {
+      "name": "Marseille"
+    },
+    "palace": {
+      "name": "Crystal Palace"
+    },
+    "palmeiras": {
+      "name": "Palmeiras"
+    },
+    "paris": {
+      "name": "Paris SG",
+      "id": "133714"
+    },
+    "paris saint germain": {
+      "name": "Paris SG",
+      "id": "133714"
+    },
+    "paris saint-germain": {
+      "name": "Paris SG",
+      "id": "133714"
+    },
+    "paris sg": {
+      "name": "Paris SG",
+      "id": "133714"
+    },
+    "porto": {
+      "name": "FC Porto"
+    },
+    "psg": {
+      "name": "Paris SG",
+      "id": "133714"
+    },
+    "psv": {
+      "name": "PSV Eindhoven"
+    },
+    "psv eindhoven": {
+      "name": "PSV Eindhoven"
+    },
+    "rangers": {
+      "name": "Rangers FC"
+    },
+    "rangers fc": {
+      "name": "Rangers FC"
+    },
+    "rb leipzig": {
+      "name": "RB Leipzig"
+    },
+    "real madrid": {
+      "name": "Real Madrid"
+    },
+    "real madrid cf": {
+      "name": "Real Madrid"
+    },
+    "real sociedad": {
+      "name": "Real Sociedad"
+    },
+    "red devils": {
+      "name": "Manchester United"
+    },
+    "red star": {
+      "name": "Red Star Belgrade"
+    },
+    "red star belgrade": {
+      "name": "Red Star Belgrade"
+    },
+    "reds": {
+      "name": "Liverpool"
+    },
+    "rfc": {
+      "name": "Rangers FC"
+    },
+    "river": {
+      "name": "River Plate"
+    },
+    "river plate": {
+      "name": "River Plate"
+    },
+    "rm": {
+      "name": "Real Madrid"
+    },
+    "roma": {
+      "name": "AS Roma"
+    },
+    "rossoneri": {
+      "name": "AC Milan",
+      "id": "133667"
+    },
+    "santos": {
+      "name": "Santos"
+    },
+    "sao paulo": {
+      "name": "Sao Paulo"
+    },
+    "sevilla": {
+      "name": "Sevilla"
+    },
+    "shakhtar": {
+      "name": "Shakhtar Donetsk"
+    },
+    "shakhtar donetsk": {
+      "name": "Shakhtar Donetsk"
+    },
+    "sociedad": {
+      "name": "Real Sociedad"
+    },
+    "sporting": {
+      "name": "Sporting CP"
+    },
+    "sporting cp": {
+      "name": "Sporting CP"
+    },
+    "spurs": {
+      "name": "Tottenham",
+      "id": "133616"
+    },
+    "ssc napoli": {
+      "name": "Napoli"
+    },
+    "são paulo": {
+      "name": "Sao Paulo"
+    },
+    "the blues": {
+      "name": "Chelsea"
+    },
+    "the gunners": {
+      "name": "Arsenal",
+      "id": "133604"
+    },
+    "the reds": {
+      "name": "Liverpool"
+    },
+    "thfc": {
+      "name": "Tottenham",
+      "id": "133616"
+    },
+    "toffeemen": {
+      "name": "Everton"
+    },
+    "tottenham": {
+      "name": "Tottenham",
+      "id": "133616"
+    },
+    "tottenham hotspur": {
+      "name": "Tottenham",
+      "id": "133616"
+    },
+    "united": {
+      "name": "Manchester United"
+    },
+    "valencia": {
+      "name": "Valencia"
+    },
+    "villa": {
+      "name": "Aston Villa"
+    },
+    "villarreal": {
+      "name": "Villarreal"
+    },
+    "west ham": {
+      "name": "West Ham"
+    },
+    "whu": {
+      "name": "West Ham"
+    },
+    "wolfsburg": {
+      "name": "Wolfsburg"
+    },
+    "wolverhampton": {
+      "name": "Wolverhampton Wanderers"
+    },
+    "wolverhampton wanderers": {
+      "name": "Wolverhampton Wanderers"
+    },
+    "wolves": {
+      "name": "Wolverhampton Wanderers"
+    },
+    "zenit": {
+      "name": "Zenit St. Petersburg"
+    }
+  }
+}

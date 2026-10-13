@@ -17,7 +17,8 @@ from config import BASE_DIR, write_text_atomic
 
 log = logging.getLogger(__name__)
 
-DEFAULT_PATH = BASE_DIR / "data" / "guild_config.json"
+DEFAULT_PATH = BASE_DIR / "data" / "guild.json"
+_LEGACY_NAME = "guild_config.json"
 
 # alias (including the canonical name) -> canonical feature name
 _aliases: dict[str, str] = {}
@@ -69,24 +70,23 @@ def parse_snowflake(value: Any) -> int | None:
     return snowflake if snowflake > 0 else None
 
 
+def _adopt_legacy_guild_file(path: Path) -> None:
+    """Move data/guild_config.json to guild.json once. A newer guild.json wins."""
+    if path.name != "guild.json" or path.exists():
+        return
+    legacy = path.with_name(_LEGACY_NAME)
+    if not legacy.is_file():
+        return
+    legacy.replace(path)
+
+
 class GuildConfig:
     """JSON map of guild id -> default and per-function announce channels."""
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or DEFAULT_PATH
+        _adopt_legacy_guild_file(self.path)
         self._data: dict[str, Any] | None = None
-
-    def get_announce_channel_id(
-        self,
-        guild_id: int,
-        feature: str | None = None,
-    ) -> int | None:
-        entry = self._guild_entry(guild_id)
-        if feature:
-            override = self._override_id(entry, feature)
-            if override is not None:
-                return override
-        return parse_snowflake(entry.get("announce_channel_id"))
 
     def get_default_announce_channel_id(self, guild_id: int) -> int | None:
         return parse_snowflake(self._guild_entry(guild_id).get("announce_channel_id"))
@@ -202,6 +202,28 @@ class GuildConfig:
         self._drop_empty_guild(data.get("guilds", {}), guild_id)
         self._save(data)
         return default_cleared, tuple(dropped)
+
+    def guild_ids(self) -> list[int]:
+        ids: list[int] = []
+        for guild_key in self._load().get("guilds", {}):
+            guild_id = parse_snowflake(guild_key)
+            if guild_id is not None:
+                ids.append(guild_id)
+        return ids
+
+    def guild_list(self, guild_id: int, key: str) -> list[Any]:
+        """Copy of a per-guild JSON list, or [] if missing."""
+        raw = self._guild_entry(guild_id).get(key)
+        return list(raw) if isinstance(raw, list) else []
+
+    def set_guild_list(self, guild_id: int, key: str, items: list[Any]) -> None:
+        data, entry = self._mutable_guild(guild_id)
+        if items:
+            entry[key] = list(items)
+        else:
+            entry.pop(key, None)
+            self._drop_empty_guild(data.get("guilds", {}), guild_id)
+        self._save(data)
 
     def should_send_setup_hint(self, guild_id: int) -> bool:
         return not bool(self._guild_entry(guild_id).get("setup_hint_sent"))

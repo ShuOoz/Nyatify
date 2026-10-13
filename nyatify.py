@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import fcntl
 import logging
+from pathlib import Path
 
 import discord
 from discord.ext import commands
 
-from config import settings
+from cogs.admin import apply_admin_command_visibility
+from config import BASE_DIR, settings
 from loader import required_intent_names, selected_extensions
 
 log = logging.getLogger("nyatify")
+
+_LOCK_PATH = BASE_DIR / "data" / "nyatify.lock"
+# Held until this process exits. Closing it would unlock while we are still logged in.
+_lock_file = None
 
 
 def bot_intents(enabled_cogs: list[str] | None = None) -> discord.Intents:
@@ -18,6 +25,9 @@ def bot_intents(enabled_cogs: list[str] | None = None) -> discord.Intents:
     intents = discord.Intents.default()
     intents.voice_states = False
     intents.members = True
+    intents.dm_messages = False
+    intents.dm_reactions = False
+    intents.dm_typing = False
     for name in required_intent_names(enabled_cogs):
         if not hasattr(intents, name):
             log.warning("Ignoring unknown REQUIRED_INTENTS name %s", name)
@@ -35,6 +45,8 @@ class Nyatify(commands.Bot):
             intents=bot_intents(enabled_cogs),
         )
         self._enabled_cogs = enabled_cogs
+        # Owner commands stay off the menu until /admin. A restart hides them.
+        self.admin_commands_visible = False
 
     async def setup_hook(self) -> None:
         for extension in selected_extensions(self._enabled_cogs):
@@ -48,22 +60,44 @@ class Nyatify(commands.Bot):
         except Exception:
             log.exception("Failed to sync slash commands")
 
+    def _prepare_slash_commands(self) -> discord.abc.Snowflake | None:
+        """Shape the local tree for the next publish.
+
+        `copy_global_to` keeps guild commands that were dropped globally, so
+        the guild list is cleared first. That is what removes a hidden command
+        from the menu on the next sync.
+        """
+        apply_admin_command_visibility(self)
+        guild_id = settings.sync_guild_id
+        if not guild_id:
+            return None
+        keep = discord.Object(id=guild_id)
+        self.tree.clear_commands(guild=keep)
+        self.tree.copy_global_to(guild=keep)
+        return keep
+
     async def _sync_slash_commands(self) -> None:
         """Publish slash commands to one Discord scope and empty the other.
 
         Guild copies and global copies of the same names show up twice in the
         command list. Keep only the scope selected by SYNC_GUILD_ID.
         """
-        guild_id = settings.sync_guild_id
-        keep = discord.Object(id=guild_id) if guild_id else None
+        keep = await self._sync_active_slash_commands()
+        try:
+            await self._clear_other_slash_scopes(keep)
+        except Exception:
+            log.exception("Could not clear leftover slash commands")
+
+    async def _sync_active_slash_commands(self) -> discord.abc.Snowflake | None:
+        """Publish the current command list. Does not walk other servers."""
+        keep = self._prepare_slash_commands()
         if keep is not None:
-            self.tree.copy_global_to(guild=keep)
             synced = await self.tree.sync(guild=keep)
-            log.info("Synced %s slash command(s) to guild %s", len(synced), guild_id)
-        else:
-            synced = await self.tree.sync()
-            log.info("Synced %s global slash command(s)", len(synced))
-        await self._clear_other_slash_scopes(keep)
+            log.info("Synced %s slash command(s) to guild %s", len(synced), keep.id)
+            return keep
+        synced = await self.tree.sync()
+        log.info("Synced %s global slash command(s)", len(synced))
+        return None
 
     async def _clear_other_slash_scopes(
         self, keep: discord.abc.Snowflake | None
@@ -121,8 +155,27 @@ def configure_logging() -> None:
     )
 
 
+def hold_process_lock(path: Path | None = None) -> None:
+    """One process only. A second start exits before it logs into Discord.
+
+    The lock lasts until this process exits. A crash releases it.
+    """
+    global _lock_file
+    lock_path = _LOCK_PATH if path is None else path
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        log.error("Nyatify is already running")
+        raise SystemExit(1) from None
+    _lock_file = handle
+
+
 def main() -> None:
     configure_logging()
+    hold_process_lock()
     bot = Nyatify()
     bot.run(settings.require_token(), log_handler=None)
 

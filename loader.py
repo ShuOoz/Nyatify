@@ -16,6 +16,7 @@ log = logging.getLogger(__name__)
 # Unlisted cogs use the filename (without .py).
 COG_PUBLIC_NAMES = {
     "voice_notify": "voice",
+    "news_notify": "news",
 }
 _STEM_FROM_PUBLIC = {public: stem for stem, public in COG_PUBLIC_NAMES.items()}
 
