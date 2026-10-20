@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import discord
 import pytest
@@ -69,6 +70,61 @@ async def case_cog_commands_load_reload_and_guards(cog):
     await cog.unload_cog.callback(cog, ctx, "admin")
     cog.bot.unload_extension.assert_not_awaited()
     assert "cannot be unloaded" in reply_text(ctx)
+
+
+async def test_reload_refreshes_feature_modules_before_each_cog(cog, monkeypatch):
+    order = []
+    monkeypatch.setattr(
+        "cogs.admin.reload_cog_modules",
+        lambda extension: order.append(("modules", extension)),
+    )
+
+    async def reload_extension(extension):
+        order.append(("cog", extension))
+
+    cog.bot.reload_extension = reload_extension
+    cases = (
+        ("voice", "cogs.voice_notify"),
+        ("news", "cogs.news_notify"),
+        ("music", "cogs.osa_musify"),
+    )
+    for name, extension in cases:
+        cog.bot.extensions = {extension: object()}
+        await cog.reload_cog.callback(cog, fake_context(), name)
+    assert order == [
+        ("modules", "cogs.voice_notify"),
+        ("cog", "cogs.voice_notify"),
+        ("modules", "cogs.news_notify"),
+        ("cog", "cogs.news_notify"),
+        ("modules", "cogs.osa_musify"),
+        ("cog", "cogs.osa_musify"),
+    ]
+
+
+async def test_reload_leaves_feature_modules_alone_when_the_cog_is_not_loaded(
+    cog, monkeypatch
+):
+    called = []
+    monkeypatch.setattr(
+        "cogs.admin.reload_cog_modules",
+        lambda extension: called.append(extension),
+    )
+    cog.bot.extensions = {}
+    await cog.reload_cog.callback(cog, fake_context(), "news")
+    assert called == []
+    cog.bot.reload_extension.assert_awaited_once_with("cogs.news_notify")
+
+
+async def test_reload_stops_when_feature_modules_fail(cog, monkeypatch):
+    def boom(_extension):
+        raise SyntaxError("panel")
+
+    monkeypatch.setattr("cogs.admin.reload_cog_modules", boom)
+    cog.bot.extensions = {"cogs.osa_musify": object()}
+    ctx = fake_context()
+    await cog.reload_cog.callback(cog, ctx, "music")
+    cog.bot.reload_extension.assert_not_awaited()
+    assert "failed to reload" in reply_text(ctx)
 
 
 async def case_admin_errors_are_clear(cog):
@@ -147,6 +203,7 @@ def _names(bot, *, guild: discord.Object | None = None) -> set[str]:
 
 async def test_admin_password(monkeypatch, gated_admin, caplog):
     await case_admin_password_shows_and_hides_owner_commands(gated_admin, caplog)
+    await case_admin_replies_before_the_slash_sync(gated_admin)
     with monkeypatch.context() as mp:
         await case_admin_password_missing_or_sync_failure(mp)
 
@@ -208,6 +265,59 @@ async def case_admin_password_shows_and_hides_owner_commands(gated_admin, caplog
     assert reply_text(ctx) == notice_text("Admin commands hidden.")
     assert _names(bot).isdisjoint(HIDDEN_OWNER_COMMANDS)
     assert bot.tree.get_command("news").get_command("check") is None
+
+
+def _slash_interaction() -> tuple[MagicMock, dict[str, bool]]:
+    done = {"value": False}
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.response.is_done.side_effect = lambda: done["value"]
+    interaction.response.defer = AsyncMock()
+
+    async def send_message(**_kwargs):
+        done["value"] = True
+
+    interaction.response.send_message = AsyncMock(side_effect=send_message)
+    interaction.edit_original_response = AsyncMock()
+    return interaction, done
+
+
+async def case_admin_replies_before_the_slash_sync(gated_admin):
+    """A rate-limited sync must not hold the ephemeral "thinking" placeholder."""
+    bot, cog = gated_admin
+    bot.admin_commands_visible = True
+    interaction, _done = _slash_interaction()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_sync(*_args, **_kwargs):
+        started.set()
+        await release.wait()
+        return []
+
+    bot.tree.sync = slow_sync
+    task = asyncio.create_task(cog.admin_commands.callback(cog, interaction, None))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        interaction.response.defer.assert_not_awaited()
+        sent = interaction.response.send_message.await_args.kwargs["content"]
+        assert sent == notice_text("Admin commands hidden.")
+    finally:
+        release.set()
+    await task
+    assert bot.admin_commands_visible is False
+
+    bot.admin_commands_visible = False
+    bot.tree.sync = AsyncMock(side_effect=RuntimeError("down"))
+    failed, _done = _slash_interaction()
+    await cog.admin_commands.callback(cog, failed, "gate-pass-9")
+    failed.response.defer.assert_not_awaited()
+    assert failed.response.send_message.await_args.kwargs["content"] == notice_text(
+        "Admin commands shown."
+    )
+    failed.edit_original_response.assert_awaited_once_with(
+        content=notice_text("Could not update commands.")
+    )
+    assert bot.admin_commands_visible is False
 
 
 async def case_admin_password_missing_or_sync_failure(monkeypatch):

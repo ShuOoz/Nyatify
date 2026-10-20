@@ -128,6 +128,10 @@ class Settings:
         self.news_poll = self.news_poll_match or self.news_poll_post
         self.ai_on_poll = _flag(_first(environ, file_values, "AI_ON_POLL"))
 
+        # music plays through this Lavalink node. Empty leaves play unable to start.
+        self.lavalink_uri = text("LAVALINK_URI") or None
+        self.lavalink_password = text("LAVALINK_PASSWORD") or None
+
     def require_token(self) -> str:
         if not self.token:
             raise RuntimeError(

@@ -43,6 +43,8 @@ def case_settings_read_file_env_and_defaults(tmp_path: Path):
     assert blank.weibo_proxies == ()
     assert blank.ai_proxy is None
     assert blank.ai_api_key is None
+    assert blank.lavalink_uri is None
+    assert blank.lavalink_password is None
     proxied = _settings(tmp_path, "BILI_PROXY= http://127.0.0.1:7890 \n")
     assert proxied.bili_proxy == "http://127.0.0.1:7890"
     assert proxied.bili_proxies == ("http://127.0.0.1:7890",)
@@ -95,7 +97,9 @@ def case_settings_read_file_env_and_defaults(tmp_path: Path):
         "WEIBO_COOKIES=SUB=login\n"
         "AI_BASE_URL=https://ai.example.test/chat/\n"
         "AI_MODEL=local-chat\n"
-        "NEWS_POLL_MATCH=1\nNEWS_POLL_POST=1\nAI_ON_POLL=1\n",
+        "NEWS_POLL_MATCH=1\nNEWS_POLL_POST=1\nAI_ON_POLL=1\n"
+        "LAVALINK_URI=http://127.0.0.1:2333\n"
+        "LAVALINK_PASSWORD=node-secret\n",
     )
     assert parsed.enabled_cogs == ["voice_notify", "admin"]
     assert parsed.sync_guild_id == 123456789012345678
@@ -109,6 +113,8 @@ def case_settings_read_file_env_and_defaults(tmp_path: Path):
     assert parsed.news_poll_match is True
     assert parsed.news_poll_post is True
     assert parsed.ai_on_poll is True
+    assert parsed.lavalink_uri == "http://127.0.0.1:2333"
+    assert parsed.lavalink_password == "node-secret"
     off = _settings(tmp_path, "NEWS_POLL_MATCH=0\nNEWS_POLL_POST=0\nAI_ON_POLL=0\n")
     assert off.news_poll is False
     match_only = _settings(tmp_path, "NEWS_POLL_MATCH=1\nNEWS_POLL_POST=0\n")

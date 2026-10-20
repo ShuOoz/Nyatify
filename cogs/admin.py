@@ -16,7 +16,6 @@ from announce import (
     ACCENT_COLOR,
     CommandTarget,
     command_error_message,
-    defer_response,
     notice_text,
     owner_only,
     respond,
@@ -33,6 +32,7 @@ from loader import (
     normalize_cog_name,
     public_cog_name,
     public_cog_names,
+    reload_cog_modules,
 )
 from news.command.test import HIDDEN_COMMANDS
 
@@ -172,8 +172,12 @@ class Admin(AnnounceCommands, commands.Cog):
     async def _set_admin_commands_visible(
         self, interaction: discord.Interaction, *, shown: bool
     ) -> None:
-        await defer_response(interaction, ephemeral=True)
+        # Answer before the slash sync. Discord rate-limits that bulk update,
+        # and a deferred reply stays on "thinking" until the retry finishes.
         previous = bool(getattr(self.bot, "admin_commands_visible", False))
+        line = "Admin commands shown." if shown else "Admin commands hidden."
+        extra = None if settings.sync_guild_id else "May take an hour"
+        await respond(interaction, notice_text(line, extra), ephemeral=True)
         self.bot.admin_commands_visible = shown
         try:
             keep = await self._publish_commands()
@@ -181,12 +185,11 @@ class Admin(AnnounceCommands, commands.Cog):
             self.bot.admin_commands_visible = previous
             self._restore_command_list()
             log.exception("Could not sync admin commands")
-            await respond(interaction, notice_text("Could not update commands."), ephemeral=True)
+            await _correct_admin_reply(
+                interaction, notice_text("Could not update commands.")
+            )
             return
-        line = "Admin commands shown." if shown else "Admin commands hidden."
-        extra = None if settings.sync_guild_id else "May take an hour"
         log.info("Admin commands %s", "shown" if shown else "hidden")
-        await respond(interaction, notice_text(line, extra), ephemeral=True)
         self._clear_other_scopes(keep)
 
     async def _publish_commands(self):
@@ -249,6 +252,20 @@ class Admin(AnnounceCommands, commands.Cog):
         elif action == "unload":
             await self.bot.unload_extension(extension)
         else:
+            # Feature modules stay put until this cog is actually loaded. News
+            # modules are imported by shared code, so reloading them for a cog
+            # that is not running would change voice and music underneath.
+            if extension in self.bot.extensions:
+                try:
+                    reload_cog_modules(extension)
+                except Exception:
+                    log.exception("Could not reload modules for %s", extension)
+                    public = public_cog_name(extension)
+                    await respond(
+                        interaction,
+                        notice_text(f"`{public}` modules failed to reload. Check logs."),
+                    )
+                    return
             await self.bot.reload_extension(extension)
         log.info("%s %s", verb, extension)
         if action == "unload":
@@ -319,6 +336,18 @@ class Admin(AnnounceCommands, commands.Cog):
         if message is None:
             raise error
         await respond(target, notice_text(message), ephemeral=ephemeral)
+
+
+async def _correct_admin_reply(target: CommandTarget, text: str) -> None:
+    """The first reply already went out. Replace it when the sync fails."""
+    interaction = target if isinstance(target, discord.Interaction) else None
+    if interaction is not None and interaction.response.is_done():
+        try:
+            await interaction.edit_original_response(content=text)
+            return
+        except discord.HTTPException:
+            log.exception("Could not correct the admin reply")
+    await respond(target, text, ephemeral=True)
 
 
 def _cog_lines(names: list[str]) -> str:
