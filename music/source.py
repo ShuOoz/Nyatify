@@ -3,59 +3,50 @@
 from __future__ import annotations
 
 import logging
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import wavelink
 
 log = logging.getLogger(__name__)
 
-# A link is sent only when the host is one of these. Lavalink then picks the
-# source. A song name uses the platform the command asked for.
-_HOSTS = {
-    "music.apple.com": "apple",
-    "youtube.com": "youtube",
-    "m.youtube.com": "youtube",
-    "music.youtube.com": "youtube",
-    "youtu.be": "youtube",
-    "open.spotify.com": "spotify",
-    "spotify.link": "spotify",
-    "soundcloud.com": "soundcloud",
-    "music.163.com": "netease",
+# Label, then the prefix Lavalink searches with. A link does not use the prefix.
+_PLATFORMS = {
+    "apple": ("Apple Music", "amsearch"),
+    "youtube": ("YouTube", wavelink.TrackSource.YouTube),
+    "spotify": ("Spotify", "spsearch"),
+    "soundcloud": ("SoundCloud", "scsearch"),
+    "netease": ("NetEase", "ntsearch"),
 }
-# Share links use another host. Lavalink wants the desktop host.
-_ALIASES = {
-    "geo.music.apple.com": "music.apple.com",
-    "y.music.163.com": "music.163.com",
-    "m.soundcloud.com": "soundcloud.com",
+
+# Host to platform. The second value is the desktop host Lavalink wants.
+# Short hosts only redirect; the page they land on is what gets played.
+_SITES: dict[str, tuple[str, str | None]] = {
+    "music.apple.com": ("apple", None),
+    "geo.music.apple.com": ("apple", "music.apple.com"),
+    "embed.music.apple.com": ("apple", "music.apple.com"),
+    "youtube.com": ("youtube", None),
+    "m.youtube.com": ("youtube", None),
+    "music.youtube.com": ("youtube", None),
+    "youtu.be": ("youtube", None),
+    "open.spotify.com": ("spotify", None),
+    "spotify.link": ("spotify", None),
+    "soundcloud.com": ("soundcloud", None),
+    "m.soundcloud.com": ("soundcloud", "soundcloud.com"),
+    "on.soundcloud.com": ("soundcloud", None),
+    "music.163.com": ("netease", None),
+    "y.music.163.com": ("netease", "music.163.com"),
 }
-# These hosts only redirect. The address they land on is what gets played.
-_SHORT_HOSTS = {"on.soundcloud.com"}
-_SEARCH = {
-    "apple": "amsearch",
-    "youtube": wavelink.TrackSource.YouTube,
-    "spotify": "spsearch",
-    "soundcloud": "scsearch",
-    "netease": "ntsearch",
-}
-_LABELS = {
-    "apple": "Apple Music",
-    "youtube": "YouTube",
-    "spotify": "Spotify",
-    "soundcloud": "SoundCloud",
-    "netease": "NetEase",
-}
+_SHORT = {"on.soundcloud.com", "spotify.link"}
+_YOUTUBE = {host for host, (platform, _) in _SITES.items() if platform == "youtube"}
+_SPOTIFY = {"track", "album", "playlist", "episode", "artist"}
+_TRACKING = {"si", "feature", "pp", "fbclid"}
 
 # A song name starts on Apple Music. The card can switch. A link keeps its own site.
 NAME_PLATFORM = "apple"
-
-# A name keeps this many songs. The card shows five at a time.
 MATCHES = 25
-
-# SoundCloud Go+ search hits are this long. The full song is not in the result.
 PREVIEW_MS = 30_000
 
-# The label is the button. The phrase is a style Spotify is searched for.
-# A bare genre word matches song titles, so every phrase is more than one word.
+# The phrase is what gets searched. A single genre word matches titles.
 GENRES = (
     ("Jazz", "jazz piano"),
     ("Classical", "classical piano"),
@@ -68,9 +59,7 @@ GENRES = (
     ("Ambient", "ambient instrumental"),
 )
 
-# The label is the list. A pick starts on one of five long uploads, chosen at random.
-# When that video ends, playback walks forward through the five.
-# These are ordinary videos, hours long. A livestream dies after a few seconds.
+# Five long uploads. A livestream dies after a few seconds, so these are ordinary videos.
 RADIOS = (
     ("Lo-fi", "lofi"),
     ("Jazz", "jazz"),
@@ -78,8 +67,7 @@ RADIOS = (
     ("Ambient", "ambient"),
     ("Electronic", "electronic"),
 )
-
-_RADIO_LIVES = {
+_STATION_VIDEOS = {
     "lofi": ("DfpdnFjfRvo", "eTP5PZ8NoeU", "FuCrTDiYRj0", "8b3fqIBrNW0", "iJm5cdWbh84"),
     "jazz": ("lj4VncsqFQw", "4ZUhtr_3o7c", "BywDOO99Ia0", "x0cEyeO5V6s", "uHo0CaawTqs"),
     "classical": ("WLWJy1eXX2c", "E2LM3ZlcDnk", "shoVsQhou-8", "BI8Y44J6MgI", "nBPnvGLD6BA"),
@@ -87,40 +75,31 @@ _RADIO_LIVES = {
     "electronic": ("F7wlQMx37yI", "a47T2qylqWU", "QM7L27N8-rE", "IJflpkRk_eU", "byGPEiHbsnc"),
 }
 
-def radio_lives(key: str) -> tuple[str, ...]:
-    """Five long videos for one station, in play order."""
-    return tuple(
-        f"https://www.youtube.com/watch?v={video_id}"
-        for video_id in _RADIO_LIVES.get(key, ())
-    )
+
+def station_videos(key: str) -> tuple[str, ...]:
+    return tuple(f"https://www.youtube.com/watch?v={video_id}" for video_id in _STATION_VIDEOS.get(key, ()))
 
 
 def normalize_platform(name: str | None) -> str:
     key = (name or "").strip().lower()
-    return key if key in _SEARCH else "youtube"
+    return key if key in _PLATFORMS else "youtube"
 
 
 def platform_key(query: str, platform: str = "youtube") -> str:
-    parsed = urlparse(query)
-    host = (parsed.hostname or "").lower().removeprefix("www.")
-    if host == "m.soundcloud.com":
-        host = "soundcloud.com"
-    return _HOSTS.get(host, normalize_platform(platform))
+    found = _SITES.get(_host(urlparse(query)))
+    return found[0] if found else normalize_platform(platform)
 
 
 def platform_label(query: str, platform: str = "youtube") -> str:
-    return _LABELS[platform_key(query, platform)]
+    return _PLATFORMS[platform_key(query, platform)][0]
 
 
 def platform_pairs() -> tuple[tuple[str, str], ...]:
-    return tuple((key, _LABELS[key]) for key in _SEARCH)
+    return tuple((key, label) for key, (label, _) in _PLATFORMS.items())
 
 
 def platform_line(*, last: str = "and") -> str:
-    """The five sites in menu order, joined for a sentence."""
-    labels = [label for _, label in platform_pairs()]
-    if len(labels) < 2:
-        return labels[0] if labels else ""
+    labels = [label for label, _ in _PLATFORMS.values()]
     return f"{', '.join(labels[:-1])}, {last} {labels[-1]}"
 
 
@@ -129,112 +108,75 @@ def is_link(query: str) -> bool:
     return bool(parsed.scheme and parsed.netloc)
 
 
-def is_playlist_link(query: str) -> bool:
-    """A playlist or a SoundCloud set.
-
-    A watch link can carry a list id. That link is still the one recording.
-    """
-    if not is_link(query):
-        return False
-    path = (urlparse(query).path or "").lower()
-    place = _place(query)
-    if "/playlist" in place:
-        return True
-    return "/sets/" in path or path.rstrip("/").endswith("/sets")
-
-
-def is_album_link(query: str) -> bool:
-    return is_link(query) and "/album" in _place(query)
-
-
-def is_artist_link(query: str) -> bool:
-    return is_link(query) and "/artist" in _place(query)
-
-
 def request_mode(query: str) -> str:
+    """name, track, playlist (a playlist or an album), or artist."""
     if not is_link(query):
         return "name"
-    if is_playlist_link(query) or is_album_link(query):
+    host = _site(query)
+    sections = _sections(query)
+    # A SoundCloud title is a free slug. Only a real sets segment is a collection.
+    if "sets" in sections or (host != "soundcloud.com" and "playlist" in sections):
         return "playlist"
-    if is_artist_link(query):
+    if host != "soundcloud.com" and "album" in sections and not _apple_song(query):
+        return "playlist"
+    if host != "soundcloud.com" and "artist" in sections:
         return "artist"
     return "track"
 
 
-def _place(query: str) -> str:
-    parsed = urlparse(query)
-    path = (parsed.path or "").lower()
-    return f"{path}#{(parsed.fragment or '').lower()}"
+def import_link(query: str) -> str | None:
+    """A playlist or album Create can save. A watch link saves its list, when it has one."""
+    if request_mode(query) == "playlist":
+        return query
+    return _youtube_list(query)
 
 
-def drop_previews(tracks: list, *, search: bool = True) -> list:
-    """Leave out SoundCloud previews.
-
-    A search treats a 30-second hit as a preview. A direct link plays that length.
-    """
-    return [track for track in tracks if not _preview(track, search=search)]
-
-
-def _preview(track: object, *, search: bool) -> bool:
-    if getattr(track, "is_preview", None) is True:
-        return True
-    if not search:
-        return False
-    length = getattr(track, "length", None)
-    if isinstance(length, bool) or not isinstance(length, int):
-        return False
-    return 0 < length <= PREVIEW_MS
-
-
-def take_tracks(results: object, mode: str) -> list:
-    """A name keeps the first matches. A song link keeps the recording. A playlist keeps every song."""
-    tracks = getattr(results, "tracks", None)
-    if isinstance(tracks, list):
-        found = list(tracks)
-    elif isinstance(results, list):
-        found = list(results)
-    else:
-        found = []
-    if mode in ("playlist", "draw"):
-        return found
-    if mode == "track":
-        return found[:1]
-    if mode == "artist":
-        return found[:MATCHES]
-    return found[:MATCHES]
+def canonical_url(url: str) -> str:
+    """One address for one recording. Tracking parameters such as si are left off."""
+    video = _youtube_video(url)
+    if video:
+        return f"https://www.youtube.com/watch?v={video}"
+    direct = _spotify_url(url) or _apple_song(url)
+    if direct:
+        return direct
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return url
+    pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    kept = [(key, value) for key, value in pairs if not _tracking(key)]
+    path = parsed.path.rstrip("/") if len(parsed.path) > 1 else parsed.path
+    if kept == pairs and path == parsed.path and not parsed.fragment:
+        return url
+    return urlunparse(parsed._replace(path=path, query=urlencode(kept), fragment=""))
 
 
 def track_query(text: str) -> str | None:
-    """A song name or an Apple Music, YouTube, Spotify, SoundCloud, or NetEase link.
-
-    None means the text is a link from somewhere else. An empty string is blank.
-    """
+    """A song name or a supported link. None is some other site. An empty string is blank."""
     query = " ".join(text.split())
     if not query:
         return ""
     parsed = urlparse(query)
     if not parsed.scheme and not parsed.netloc:
         head = query.split("/", 1)[0].split("?", 1)[0].lower().removeprefix("www.")
-        if head not in _HOSTS and head not in _ALIASES and head not in _SHORT_HOSTS:
+        if head not in _SITES:
             return query
         query = f"https://{query}"
         parsed = urlparse(query)
-    host = _host(parsed)
-    if host in _ALIASES:
-        parsed = parsed._replace(netloc=_ALIASES[host])
+    row = _SITES.get(_host(parsed))
+    if row is None:
+        return None
+    desktop = row[1]
+    if desktop:
+        parsed = parsed._replace(netloc=desktop)
         query = parsed.geturl()
-        host = _ALIASES[host]
-    if host in _HOSTS or host in _SHORT_HOSTS:
-        return query
-    return None
+    return _spotify_url(query) or _apple_song(query) or query
 
 
 def needs_redirect(query: str) -> bool:
-    return _host(urlparse(query)) in _SHORT_HOSTS
+    return _host(urlparse(query)) in _SHORT
 
 
 async def follow_redirect(url: str) -> str | None:
-    """The page a short share link lands on, when that page is a supported link."""
     try:
         import aiohttp
 
@@ -251,13 +193,131 @@ async def follow_redirect(url: str) -> str | None:
     return opened
 
 
-def _host(parsed: object) -> str:
-    return (getattr(parsed, "hostname", None) or "").lower().removeprefix("www.")
+def drop_previews(tracks: list, *, search: bool = True) -> list:
+    """A search drops a 30-second SoundCloud hit. A direct link plays that length."""
+    return [track for track in tracks if not _preview(track, search)]
+
+
+def take_tracks(results: object, mode: str) -> list:
+    """A name or an artist keeps the first matches. A song keeps one. A playlist keeps all."""
+    raw = getattr(results, "tracks", None)
+    if isinstance(raw, list):
+        found = list(raw)
+    elif isinstance(results, list):
+        found = list(results)
+    else:
+        found = []
+    if mode in ("playlist", "draw"):
+        return found
+    if mode != "track":
+        return found[:MATCHES]
+    picked = _selected(results)
+    if picked is not None and picked < len(found):
+        return [found[picked]]
+    return found[:1]
 
 
 async def search_track(query: str, platform: str = "youtube"):
     parsed = urlparse(query)
     if parsed.scheme and parsed.netloc:
         return await wavelink.Playable.search(query)
-    source = _SEARCH[normalize_platform(platform)]
-    return await wavelink.Playable.search(query, source=source)
+    _, prefix = _PLATFORMS[normalize_platform(platform)]
+    return await wavelink.Playable.search(query, source=prefix)
+
+
+def _host(parsed: object) -> str:
+    return (getattr(parsed, "hostname", None) or "").lower().removeprefix("www.")
+
+
+def _site(query: str) -> str:
+    host = _host(urlparse(query))
+    row = _SITES.get(host)
+    if row is None:
+        return host
+    return row[1] or host
+
+
+def _sections(query: str) -> set[str]:
+    parsed = urlparse(query)
+    found: set[str] = set()
+    for chunk in (parsed.path or "", parsed.fragment or ""):
+        for part in chunk.split("/"):
+            head = part.split("?", 1)[0].split("&", 1)[0].strip().lower()
+            if head:
+                found.add(head)
+    return found
+
+
+def _query_value(query: str, key: str) -> str:
+    return next((value.strip() for name, value in parse_qsl(query) if name == key and value.strip()), "")
+
+
+def _tracking(key: str) -> bool:
+    name = key.lower()
+    return name in _TRACKING or name.startswith("utm_")
+
+
+def _selected(results: object) -> int | None:
+    index = getattr(results, "selected", None)
+    if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+        return None
+    return index
+
+
+def _youtube_video(url: str) -> str | None:
+    parsed = urlparse(url)
+    host = _host(parsed)
+    if host not in _YOUTUBE:
+        return None
+    if host == "youtu.be":
+        return parsed.path.strip("/").split("/", 1)[0] or None
+    path = parsed.path.rstrip("/")
+    for prefix in ("/shorts/", "/embed/", "/live/", "/v/"):
+        if path.startswith(prefix):
+            return path[len(prefix):].split("/", 1)[0] or None
+    if path == "/watch":
+        return _query_value(parsed.query, "v") or None
+    return None
+
+
+def _youtube_list(query: str) -> str | None:
+    parsed = urlparse(query)
+    if _host(parsed) not in _YOUTUBE:
+        return None
+    list_id = _query_value(parsed.query, "list")
+    return f"https://www.youtube.com/playlist?list={list_id}" if list_id else None
+
+
+def _spotify_url(url: str) -> str | None:
+    parsed = urlparse(url)
+    if _host(parsed) != "open.spotify.com":
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    while parts and (parts[0] == "embed" or parts[0].startswith("intl-")):
+        parts = parts[1:]
+    if len(parts) < 2 or parts[0] not in _SPOTIFY:
+        return None
+    return f"https://open.spotify.com/{parts[0]}/{parts[1]}"
+
+
+def _apple_song(url: str) -> str | None:
+    """Apple's share button puts one song on the album address, as ?i=."""
+    parsed = urlparse(url)
+    if _site(url) != "music.apple.com":
+        return None
+    song_id = _query_value(parsed.query, "i")
+    parts = [part for part in parsed.path.split("/") if part]
+    if not song_id.isdigit() or len(parts) < 2 or len(parts[0]) != 2 or parts[1].lower() != "album":
+        return None
+    return f"https://music.apple.com/{parts[0]}/song/{song_id}"
+
+
+def _preview(track: object, search: bool) -> bool:
+    if getattr(track, "is_preview", None) is True:
+        return True
+    if not search:
+        return False
+    length = getattr(track, "length", None)
+    if isinstance(length, bool) or not isinstance(length, int):
+        return False
+    return 0 < length <= PREVIEW_MS

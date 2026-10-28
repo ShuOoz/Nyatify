@@ -15,12 +15,38 @@ from music import source
 
 log = logging.getLogger(__name__)
 
+_MODES = {"name", "track", "playlist", "draw", "artist"}
+_LINK = {"track", "playlist", "artist"}
+# One attempt is long enough for the session to appear, and short enough to give up.
+_SESSION_TRIES = 50
+
+# guild id -> (connect task, channel). A second play waits on the same attempt.
+_joins: dict[int, tuple[asyncio.Task, object]] = {}
+
+
+def _current_node() -> wavelink.Node | None:
+    try:
+        return wavelink.Pool.get_node()
+    except wavelink.InvalidNodeException:
+        return None
+
+
+def _status(node: object) -> str | None:
+    return getattr(getattr(node, "status", None), "name", None)
+
+
+def _session_ready(node: object) -> bool:
+    session_id = getattr(node, "session_id", None)
+    return isinstance(session_id, str) and bool(session_id) and _status(node) == "CONNECTED"
+
 
 def node_is_ready() -> bool:
-    try:
-        wavelink.Pool.get_node()
-    except wavelink.InvalidNodeException:
+    """Search needs a live session. Once one exists, a later drop keeps trying."""
+    node = _current_node()
+    if node is None or not _session_ready(node):
         return False
+    if node._retries == 0:
+        node._retries = None
     return True
 
 
@@ -36,24 +62,15 @@ async def connect_node(bot: commands.Bot) -> None:
     if not uri or not password:
         log.info("music has no Lavalink node configured")
         return
-    # One attempt at startup. The default retry loop never returns, so a dead
-    # node would block startup and the slash commands would never sync.
-    # After a session exists, later drops keep trying. A dead session is what
-    # makes Discord remove the bot from the voice channel.
+    # retries=0 because the default loop never returns, and a dead node would block startup.
     node = wavelink.Node(uri=uri, password=password, client=bot, retries=0)
     try:
         await wavelink.Pool.connect(nodes=[node], client=bot, cache_capacity=None)
     except wavelink.WavelinkException:
         log.exception("music could not connect to Lavalink")
         return
-    for _ in range(50):
-        if _session_ready(node):
-            node._retries = None
-            return
-        if getattr(node.status, "name", None) == "DISCONNECTED":
-            break
-        await asyncio.sleep(0.1)
-    log.warning("Lavalink has no session, so a voice channel would close")
+    if not await _wait_session(node):
+        log.warning("Lavalink has no session, so a voice channel would close")
 
 
 @dataclass(frozen=True)
@@ -62,6 +79,7 @@ class Found:
     platform: str
     tracks: list[object]
     link: bool
+    name: str | None = None
 
 
 async def find_songs(
@@ -88,7 +106,7 @@ async def find_songs(
         return offline_message()
     key = source.platform_key(query, platform)
     label = source.platform_label(query, platform)
-    kind = mode if mode in ("name", "track", "playlist", "draw", "artist") else source.request_mode(query)
+    kind = mode if mode in _MODES else source.request_mode(query)
     try:
         results = await source.search_track(query, key)
     except wavelink.WavelinkException:
@@ -99,7 +117,8 @@ async def find_songs(
         tracks = source.drop_previews(tracks, search=kind in ("name", "draw"))
     if not tracks:
         return f"Nothing on {label} matched that."
-    return Found(query, key, tracks, kind in ("track", "playlist", "artist"))
+    name = _playlist_name(results) if kind == "playlist" else None
+    return Found(query, key, tracks, kind in _LINK, name)
 
 
 @dataclass(frozen=True)
@@ -108,33 +127,41 @@ class Opened:
     skipped: list[str]
 
 
+async def open_one(guild: object | None, song: object) -> tuple[tuple[object, str] | None, str, str]:
+    """One saved link. The track keeps its platform. A miss names the song and why."""
+    title = _title(song)
+    url = getattr(song, "url", None)
+    platform = getattr(song, "platform", "youtube")
+    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+        return None, title, "That song has no link to play."
+    found = await find_songs(guild, url, str(platform), mode="track")
+    if isinstance(found, str):
+        return None, title, found
+    return (found.tracks[0], found.platform), title, ""
+
+
 async def open_recordings(guild: object | None, songs: list) -> Opened | str:
     """Load each saved link. A song that does not resolve is named in skipped."""
     opened: list[tuple[object, str]] = []
     skipped: list[str] = []
     error = "Nothing on YouTube matched that."
     for song in songs:
-        title = _title(song)
-        url = getattr(song, "url", None)
-        platform = getattr(song, "platform", "youtube")
-        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
-            error = "That song has no link to play."
+        track, title, reason = await open_one(guild, song)
+        if track is None:
             skipped.append(title)
+            error = reason or error
             continue
-        found = await find_songs(guild, url, str(platform), mode="track")
-        if isinstance(found, str):
-            error = found
-            skipped.append(title)
-            continue
-        if not found.tracks:
-            label = source.platform_label("", found.platform)
-            error = f"Nothing on {label} matched that."
-            skipped.append(title)
-            continue
-        opened.append((found.tracks[0], found.platform))
+        opened.append(track)
     if not opened:
         return error
     return Opened(opened, skipped)
+
+
+def _playlist_name(results: object) -> str | None:
+    name = getattr(results, "name", None)
+    if not isinstance(name, str):
+        return None
+    return " ".join(name.split()) or None
 
 
 def _title(song: object) -> str:
@@ -148,14 +175,66 @@ def _missing_session(exc: BaseException) -> bool:
     return isinstance(exc, wavelink.LavalinkException) and exc.status == 404
 
 
-def _session_ready(node: object) -> bool:
-    session_id = getattr(node, "session_id", None)
-    status = getattr(getattr(node, "status", None), "name", None)
-    return isinstance(session_id, str) and bool(session_id) and status == "CONNECTED"
+async def _wait_session(node: wavelink.Node) -> bool:
+    for _ in range(_SESSION_TRIES):
+        if _session_ready(node):
+            node._retries = None
+            return True
+        if _status(node) == "DISCONNECTED":
+            return False
+        await asyncio.sleep(0.1)
+    return False
+
+
+async def _drop_socket(node: wavelink.Node) -> None:
+    """Close the old socket without letting its close handler open a second session."""
+    socket = getattr(node, "_websocket", None)
+    if socket is None:
+        return
+
+    async def stay_closed() -> None:
+        return None
+
+    socket.connect = stay_closed
+    task = getattr(socket, "keep_alive_task", None)
+    if task is not None and not task.done():
+        task.cancel()
+        current = asyncio.current_task()
+        try:
+            await task
+        except asyncio.CancelledError:
+            if current is not None and current.cancelling():
+                raise
+        except Exception:
+            log.warning("music could not stop the old Lavalink socket", exc_info=True)
+    raw = getattr(socket, "socket", None)
+    if raw is None:
+        return
+    try:
+        await raw.close()
+    except Exception:
+        log.warning("music could not close the old Lavalink socket", exc_info=True)
+
+
+async def _connect_once(node: wavelink.Node, client: object) -> bool:
+    """One reconnect. A failed attempt clears every player; put them back."""
+    players = dict(node._players)
+    previous = node._retries
+    node._retries = 0
+    try:
+        await node._connect(client=client)  # type: ignore[arg-type]
+    except wavelink.WavelinkException:
+        log.exception("Could not reconnect Lavalink")
+        return False
+    finally:
+        node._retries = previous
+        if players and not node._players:
+            node._players = players
+    return True
 
 
 class GuildPlayer(wavelink.Player):
-    """Stay in the voice channel while the Lavalink link is finished."""
+    """Stay in the channel until Lavalink has the link. Leaving is stop and Close."""
 
     async def connect(
         self,
@@ -165,8 +244,7 @@ class GuildPlayer(wavelink.Player):
         self_deaf: bool = False,
         self_mute: bool = False,
     ) -> None:
-        # Discord removes the bot when the voice link is late. Ask again
-        # inside the same wait. Leaving is reserved for stop and Close.
+        # Discord drops the bot when the link is late. Ask again before the wait is over.
         attempts = 3
         last: wavelink.ChannelTimeoutException | None = None
         for attempt in range(attempts):
@@ -190,8 +268,8 @@ class GuildPlayer(wavelink.Player):
 
     async def on_voice_state_update(self, data) -> None:
         channel_id = data.get("channel_id")
-        # A cleared channel before the link is ready is Discord dropping the
-        # attempt. Destroying the player here is what quits the room.
+        # A cleared channel before the link is ready is Discord dropping the attempt.
+        # Destroying the player here is what quits the room.
         if not channel_id and not self._connection_event.is_set():
             log.warning("Discord cleared the voice channel before the link was ready")
             return
@@ -216,6 +294,7 @@ class GuildPlayer(wavelink.Player):
             )
             return
         if not await self._ensure_session():
+            self._connected = False
             log.warning("Voice link has Discord details but Lavalink has no session")
             return
         if isinstance(endpoint, str):
@@ -232,12 +311,11 @@ class GuildPlayer(wavelink.Player):
             try:
                 await self.node._update_player(self.guild.id, data=request)
             except wavelink.WavelinkException as exc:
-                # A restarted Lavalink forgets the old session but the socket
-                # can still look connected. Open a new one and send the link once more.
+                # A restarted Lavalink forgets the session while the socket still looks connected.
                 if attempt == 0 and _missing_session(exc) and await self._open_fresh_session():
                     continue
-                # Wavelink leaves the channel when this update fails. Stay and
-                # let the next attempt send the link again.
+                # Wavelink would leave the channel. Stay, and let the next attempt send the link.
+                self._connected = False
                 log.exception("Lavalink rejected the voice link")
                 return
             self._connected = True
@@ -245,110 +323,127 @@ class GuildPlayer(wavelink.Player):
             log.info("Voice link is ready")
             return
 
-    async def _open_fresh_session(self) -> bool:
-        node = self.node
-        socket = getattr(node, "_websocket", None)
-        if socket is not None:
-            task = getattr(socket, "keep_alive_task", None)
-            if task is not None:
-                task.cancel()
-            raw = getattr(socket, "socket", None)
-            if raw is not None:
-                try:
-                    await raw.close()
-                except Exception:
-                    log.warning("music could not close the old Lavalink socket", exc_info=True)
-        node._session_id = None
-        node._status = wavelink.NodeStatus.DISCONNECTED
-        previous = node._retries
-        node._retries = 0
-        log.warning("Lavalink session is gone; opening a new one")
-        try:
-            await node._connect(client=self.client)
-        except wavelink.WavelinkException:
-            log.exception("Could not reconnect Lavalink")
-            return False
-        finally:
-            node._retries = previous
-        for _ in range(30):
-            if _session_ready(node):
-                node._retries = None
-                return True
-            await asyncio.sleep(0.1)
-        return False
-
     async def _ensure_session(self) -> bool:
         node = self.node
         if _session_ready(node):
             return True
-        if getattr(node.status, "name", None) != "CONNECTING":
-            log.warning("Lavalink session is down; connecting again")
-            try:
-                await node._connect(client=self.client)
-            except wavelink.WavelinkException:
-                log.exception("Could not reconnect Lavalink")
-                return _session_ready(node)
-        for _ in range(30):
-            if _session_ready(node):
-                node._retries = None
-                return True
-            await asyncio.sleep(0.1)
-        return False
+        if _status(node) == "CONNECTING":
+            return await _wait_session(node)
+        log.warning("Lavalink session is down; connecting again")
+        await _drop_socket(node)
+        node._session_id = None
+        node._status = wavelink.NodeStatus.DISCONNECTED
+        if not await _connect_once(node, self.client) and not _session_ready(node):
+            return False
+        return await _wait_session(node)
+
+    async def _open_fresh_session(self) -> bool:
+        self.node._session_id = None
+        self.node._status = wavelink.NodeStatus.DISCONNECTED
+        return await self._ensure_session()
 
 
-def _current_node() -> wavelink.Node | None:
-    try:
-        return wavelink.Pool.get_node()
-    except wavelink.InvalidNodeException:
+def _channel_num(value: object | None) -> int | None:
+    number = getattr(value, "id", None)
+    if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
         return None
+    return number
 
 
 def _replaced(player: wavelink.Player) -> bool:
-    """A voice link left behind by a reload, or tied to a node that is gone."""
+    """A player left by a reload, or tied to a node this process no longer has."""
     if isinstance(player, GuildPlayer):
         node = _current_node()
         return node is not None and player.node is not node
     return player.__class__.__module__ == GuildPlayer.__module__
 
 
+def _pending(guild: object | None) -> tuple[asyncio.Task, object] | None:
+    guild_id = _channel_num(guild)
+    if guild_id is None:
+        return None
+    pair = _joins.get(guild_id)
+    if pair is None or pair[0].done():
+        return None
+    return pair
+
+
+def joining(guild: object | None) -> asyncio.Task | None:
+    pair = _pending(guild)
+    return None if pair is None else pair[0]
+
+
+def joining_channel(guild: object | None) -> object | None:
+    pair = _pending(guild)
+    return None if pair is None else pair[1]
+
+
+def _forget_join(guild_id: int, task: asyncio.Task) -> None:
+    pair = _joins.get(guild_id)
+    if pair is not None and pair[0] is task:
+        _joins.pop(guild_id, None)
+
+
+async def _enter(channel: object) -> wavelink.Player:
+    return await channel.connect(cls=GuildPlayer, self_deaf=True)  # type: ignore[attr-defined]
+
+
 async def _rejoin(player: object, channel: object) -> wavelink.Player:
-    """Leave and enter once, so the channel gets a voice link this process owns."""
     try:
         await player.disconnect()  # type: ignore[attr-defined]
     except Exception:
         log.warning("music could not drop the old voice link", exc_info=True)
-    joined = await channel.connect(cls=GuildPlayer, self_deaf=True)  # type: ignore[attr-defined]
-    return joined
+    return await _enter(channel)
+
+
+def _same_room(player: wavelink.Player, channel: object) -> wavelink.Player | str:
+    landed = _channel_num(getattr(player, "channel", None))
+    wanted = _channel_num(channel)
+    if landed is not None and wanted is not None and landed != wanted:
+        return "Join the voice channel first."
+    return player
+
+
+def _start_join(guild: object, channel: object) -> asyncio.Task:
+    task = asyncio.create_task(_enter(channel), name="music-join")
+    guild_id = _channel_num(guild)
+    if guild_id is not None:
+        _joins[guild_id] = (task, channel)
+        task.add_done_callback(lambda done, gid=guild_id: _forget_join(gid, done))
+    return task
 
 
 async def _join(guild: object, channel: object) -> wavelink.Player | str:
-    player = getattr(guild, "voice_client", None)
     try:
+        # discord.py publishes the voice client before the link is ready.
+        inflight = joining(guild)
+        if inflight is not None:
+            return _same_room(await inflight, channel)
+        player = getattr(guild, "voice_client", None)
         if isinstance(player, wavelink.Player):
             if _replaced(player):
                 return await _rejoin(player, channel)
             if player.channel != channel:
                 await player.move_to(channel)
-            elif isinstance(player, GuildPlayer) and not player.connected:
+            elif isinstance(player, GuildPlayer) and not player._connection_event.is_set():
                 await player.connect(timeout=24, reconnect=True, self_deaf=True)
             return player
         if player is not None:
             return "I am already in a voice channel."
-        joined = await channel.connect(cls=GuildPlayer, self_deaf=True)
+        return _same_room(await _start_join(guild, channel), channel)
     except (discord.ClientException, discord.Forbidden, wavelink.WavelinkException):
         log.exception("Could not join the voice channel")
         return "I could not join that voice channel."
-    return joined
 
 
-async def _play_track(player: wavelink.Player, track: object) -> None:
+async def _play_track(player: wavelink.Player, track: object) -> wavelink.Player:
+    """Play this track. A missing session joins again, and the new player is returned."""
     try:
         await player.play(track)
     except wavelink.LavalinkException as exc:
         channel = getattr(player, "channel", None)
         if not _missing_session(exc) or channel is None:
             raise
-        # The session that owned this link is gone. Join again so Discord
-        # sends a voice link the new session can use.
-        fresh = await _rejoin(player, channel)
-        await fresh.play(track)
+        player = await _rejoin(player, channel)
+        await player.play(track)
+    return player

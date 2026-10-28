@@ -1,0 +1,320 @@
+"""The playlist card frame. No Discord login and no Lavalink node."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+
+import discord
+
+from guild import GuildConfig
+from music.panel import (
+    LABEL_PLAYER,
+    LABEL_QUEUE,
+    MARK_ADD,
+    MARK_BACK,
+    MARK_CLOSE,
+    MARK_NEXT,
+    MARK_SEARCH,
+    RADIO_MARK,
+    song_row,
+)
+from music.playlist.card import (
+    LiveLine,
+    HISTORY,
+    LABEL_ADJUST,
+    LABEL_EMPTY,
+    LABEL_NEW_LIST,
+    LABEL_REMOVE,
+    LABEL_YOUR,
+    MARK_DELETE,
+    MARK_LINE,
+    MARK_MINUS,
+    MARK_SAVE,
+    PICK,
+    PLAYLISTS,
+    QUEUE,
+    _song_span,
+    _span,
+    empty_text,
+    now_text,
+    pick_text,
+    queue_row,
+)
+from music.archive import SavedSong, save_song
+from music.playback import next_track, played, queue_tracks, queued, stop_track, Queued
+
+from tests.music.support import _cards_caught_up, _named
+from tests.music.playlist.support import _button, _line_up, _menu, _press, _sections, _text
+
+def test_the_queue_names_who_asked_and_what_is_waiting():
+    current = Queued("Heart", "apple", "https://example.com/a", True, False, "Mac", 182_000, 4)
+    assert now_text(current) == (
+        "### Now Playing\n**[Heart](https://example.com/a)**\nMac · 3:02"
+    )
+    needed = Queued("Needed", "apple", "https://example.com/a", True, False, "Ed", 182_000, 4)
+    assert now_text(needed) == (
+        "### Now Playing\n**[Needed](https://example.com/a)**\nEd · 3:02"
+    )
+    named = Queued("Needed, Ed", "apple", "https://example.com/a", True, False, "Ed", 182_000, 4)
+    assert now_text(named) == (
+        "### Now Playing\n**[Needed, Ed](https://example.com/a)**\n3:02"
+    )
+    assert "<@" not in now_text(current)
+    assert now_text(None) == "### Nothing is playing\n-# Use /music play to play a song"
+    wide = Queued("雨" * 20, "apple", "https://example.com/a", True, False, "Mac", 182_000, 4)
+    assert now_text(wide) == (
+        f"### Now Playing\n**[{'雨' * 13}…](https://example.com/a)**\nMac · 3:02"
+    )
+    radio = Queued("Live", "youtube", None, True, True, "", 0, None)
+    assert now_text(radio).endswith(RADIO_MARK)
+    assert "0:00" not in now_text(radio)
+    assert "YouTube" not in now_text(radio)
+    waiting = Queued("First", "apple", None, False, False, "Mac", 182_000, 4)
+    assert queue_row(1, waiting) == song_row(
+        1, "First", "Mac", 182_000, "Apple Music", sep=" · ",
+    )
+    linked = Queued("First", "apple", "https://example.com/a", False, False, "Mac", 182_000, 4)
+    assert "https://example.com/a" not in queue_row(1, linked)
+    assert "<@" not in queue_row(1, waiting)
+    grey = Queued("Easy", "spotify", None, False, False, "Mac Ayres", 314_000, 4)
+    assert queue_row(1, grey).split("\n", 1)[1] == "-# \u2007\u2008\u00a0Mac Ayres · 5:14 · Spotify"
+
+def test_a_total_hides_until_every_song_has_a_length():
+    known = SavedSong("A", "youtube", "https://example.com/a", "Mac", 60_000)
+    missing = SavedSong("B", "youtube", "https://example.com/b", "Mac", 0)
+    assert _song_span(()) == 0
+    assert _song_span((known,)) == 60_000
+    assert _song_span((known, missing)) is None
+    radio = Queued("Live", "youtube", None, False, True, "", 0, None)
+    song = Queued("A", "youtube", None, False, False, "", 60_000, None)
+    assert _span([]) == 0
+    assert _span([radio]) is None
+    assert _span([radio, song]) == 60_000
+
+async def test_the_star_waits_until_a_song_has_played(tmp_path):
+    store = GuildConfig(tmp_path / "guild.json")
+    guild = MagicMock()
+    guild.id = 15
+    view = LiveLine(guild, store)
+    one = MagicMock()
+    one.id = 4
+    press = _press(one)
+    assert view.panel == QUEUE
+    assert _button(view, MARK_LINE).disabled is True
+    assert "Loved" not in _text(view)
+    rows = [item for item in view.walk_children() if isinstance(item, discord.ui.ActionRow)]
+    assert rows[0].children[-1].label == MARK_LINE
+    assert rows[0].children[0].style == discord.ButtonStyle.primary
+
+    await _button(view, HISTORY).callback(press)
+    assert view.panel == HISTORY
+    assert MARK_SAVE == "\u2605"
+    assert _button(view, MARK_SAVE).label == MARK_SAVE
+    assert _button(view, MARK_SAVE).disabled is True
+    assert _button(view, MARK_SAVE).style == discord.ButtonStyle.secondary
+
+    await _button(view, PLAYLISTS).callback(press)
+    assert _button(view, MARK_MINUS).disabled is True
+    save_song(
+        store,
+        guild.id,
+        "Evening",
+        SavedSong("Slow Down", "youtube", "https://example.com/slow", "Wave", 1_000),
+        4,
+    )
+    menu = _menu(view)
+    menu.options = [
+        discord.SelectOption(label="Evening", value="Evening", description="1 song"),
+    ]
+    menu._values = ["Evening"]
+    await menu.callback(press)
+    assert _button(view, MARK_MINUS).disabled is False
+    assert _sections(view)[0].accessory.label == MARK_SEARCH
+    assert "Loved" not in _text(view)
+
+async def test_the_queue_pages_and_removes(tmp_path):
+    titles = [f"Song {index}" for index in range(1, 8)]
+    guild, member, _player, tracks, note = await _line_up(9200, titles)
+    store = GuildConfig(tmp_path / "guild.json")
+    try:
+        assert note == "Playing Song 1."
+        tracks[0].author = "Mac"
+        tracks[0].length = 182_000
+        tracks[1].length = 120_000
+        view = LiveLine(guild, store)
+        view.message = MagicMock()
+        view.message.edit = AsyncMock()
+        view.to_components()
+        text = _text(view)
+        assert text.startswith("## Osaka Playlist")
+        assert "### Now Playing" in text
+        assert "**[Song 1](https://example.com/song-1)**" in text
+        assert "https://example.com/song-2" not in text
+        assert "Mac · 3:02" in text
+        assert "Mac · 3:02 · YouTube" not in text
+        assert "<@" not in text
+        assert "Page 1/2  |  6 songs in queue  |  2:00" in text
+        rows = [item for item in view.walk_children() if isinstance(item, discord.ui.ActionRow)]
+        labels = [child.label for child in rows[0].children]
+        assert [getattr(child, "panel", None) for child in rows[0].children] == [
+            QUEUE, HISTORY, PLAYLISTS, None,
+        ]
+        assert rows[0].children[-1].label == MARK_LINE
+        assert len(set(labels)) == 4
+        assert [label.split(name) for label, name in zip(labels, (QUEUE, HISTORY, PLAYLISTS))] == [
+            ["\u3164\uffa0\uffa0\u00a0", "\u00a0\u3164\uffa0\uffa0"],
+            ["\u3164\uffa0", "\u3164\uffa0"],
+            ["\u3164", "\u3164"],
+        ]
+        assert rows[0].children[0].style == discord.ButtonStyle.primary
+        assert [child.label for child in rows[-1].children] == [
+            MARK_BACK, MARK_NEXT, LABEL_ADJUST, LABEL_EMPTY, MARK_CLOSE,
+        ]
+        assert _button(view, LABEL_ADJUST).disabled is False
+        assert _button(view, LABEL_ADJUST).style == discord.ButtonStyle.secondary
+        assert LABEL_ADJUST.split("Adjust") == LABEL_PLAYER.split("Player")
+        assert LABEL_EMPTY.split("Empty") == LABEL_QUEUE.split("Queue")
+        assert _button(view, LABEL_EMPTY).disabled is False
+        sections = _sections(view)
+        assert sections[0].accessory.label == MARK_SEARCH
+        songs = sections[1:]
+        assert len(songs[0].children) == 1
+        assert len(songs) == 5
+        assert all(isinstance(item.accessory, discord.ui.Button) for item in songs)
+        assert [item.accessory.label for item in songs] == [MARK_DELETE] * 5
+
+        press = _press(member)
+        await _button(view, HISTORY).callback(press)
+        assert "-# Nothing has played yet" in _text(view)
+        assert _button(view, HISTORY).style == discord.ButtonStyle.primary
+        history_rows = [
+            item for item in view.walk_children() if isinstance(item, discord.ui.ActionRow)
+        ]
+        history_tabs = [child.label for child in history_rows[0].children]
+        assert [label.split(name) for label, name in zip(history_tabs, (QUEUE, HISTORY, PLAYLISTS))] == [
+            ["\u3164\uffa0", "\u3164\uffa0"],
+            ["\u3164\uffa0\uffa0\u00a0", "\u00a0\u3164\uffa0\uffa0"],
+            ["\u3164", "\u3164"],
+        ]
+        assert history_rows[0].children[-1].label == MARK_SAVE
+        assert history_rows[0].children[-1].disabled is True
+        assert [child.label for child in history_rows[-1].children] == [
+            MARK_BACK, MARK_NEXT, LABEL_YOUR, LABEL_EMPTY, MARK_CLOSE,
+        ]
+        assert _button(view, LABEL_YOUR).disabled is True
+        assert _button(view, LABEL_EMPTY).disabled is True
+        await _button(view, QUEUE).callback(press)
+
+        await _button(view, MARK_NEXT).callback(press)
+        assert "Song 7" in _text(view)
+        assert "Song 2" not in _text(view)
+        assert len(_sections(view)) == 2
+
+        press = _press()
+        await _button(view, MARK_DELETE, 6).callback(press)
+        assert "Join the voice channel first" in press.send.await_args.args[0]
+        assert any(row.title == "Song 7" for row in queued(guild))
+
+        press = _press(member)
+        await _button(view, MARK_DELETE, 6).callback(press)
+        assert "Song 7" not in _text(view)
+        assert [row.title for row in queued(guild)][-1] == "Song 6"
+        view.message.edit.assert_awaited()
+
+        save_song(
+            store,
+            guild.id,
+            "Evening",
+            SavedSong("Song 2", "youtube", "https://example.com/song-2"),
+            member.id,
+        )
+        press = _press(member)
+        await _button(view, PLAYLISTS).callback(press)
+        assert pick_text() in _text(view)
+        assert _button(view, LABEL_NEW_LIST).label == LABEL_NEW_LIST
+        assert _button(view, LABEL_REMOVE).disabled is True
+        assert "<@" not in _text(view)
+        assert _button(view, PLAYLISTS).style == discord.ButtonStyle.primary
+        menu = _menu(view)
+        assert menu.placeholder == PICK
+        assert [(option.label, option.description, option.default) for option in menu.options] == [
+            ("Evening", "1 song", False),
+        ]
+        menu._values = ["Evening"]
+        await menu.callback(press)
+        assert "Song 2" in _text(view)
+        assert empty_text("Evening") not in _text(view)
+        assert f"Page 1/1  |  1 song  |  <@{member.id}>" in _text(view)
+        assert "0:00" not in _text(view)
+
+        await next_track(guild)
+        await _button(view, HISTORY).callback(press)
+        assert [row.title for row in played(guild)] == ["Song 1"]
+        assert "Song 1" in _text(view)
+        assert "-# Nothing has played yet" not in _text(view)
+        assert "Page 1/1  |  1 song  |  3:02" in _text(view)
+        waiting = [row.title for row in queued(guild)]
+        press = _press(member)
+        press.guild = guild
+        await _button(view, MARK_ADD, 0).callback(press)
+        assert "Added Song 1" in press.send.await_args.args[0]
+        assert press.response.edit_message.await_count == 1
+        assert view.is_finished() is False
+        assert [row.title for row in played(guild)] == []
+        assert "-# Nothing has played yet" in _text(view)
+        assert "Song 1" not in _text(view)
+        assert [row.title for row in queued(guild)] == [*waiting, "Song 1"]
+        assert queued(guild)[0].title == waiting[0]
+
+        found = []
+
+        async def searched(_interaction, query, _platform=None, fresh=False):
+            found.append((query, fresh))
+            return True
+
+        view.open_search = searched
+        press = _press(member)
+        await _button(view, MARK_SEARCH).callback(press)
+        modal = press.response.send_modal.await_args.args[0]
+        assert modal.title == "Search"
+        modal.query.component._value = "   "
+        blank = _press()
+        await modal.on_submit(blank)
+        assert found == []
+        assert "Name an artist or a song" in blank.send.await_args.args[0]
+        modal.query.component._value = "ocean drive"
+        submit = _press(member)
+        await modal.on_submit(submit)
+        assert found == [("ocean drive", True)]
+        assert view.is_finished() is False
+    finally:
+        await stop_track(guild)
+
+async def test_an_open_queue_shows_a_song_just_added():
+    guild, member, _player, _tracks, note = await _line_up(9400, ["Alpha"])
+    view = LiveLine(guild, MagicMock())
+    try:
+        assert note == "Playing Alpha."
+        assert "Nothing is after this song." not in _text(view)
+        message = MagicMock()
+        message.edit = AsyncMock()
+        view.follow(message)
+        extra = _named("Beta")
+        extra.uri = "https://example.com/beta"
+        assert await queue_tracks(member, guild, [extra]) == "Added Beta."
+        await _cards_caught_up()
+        message.edit.assert_awaited()
+        text = _text(view)
+        assert "Alpha" in text
+        assert "Beta" in text
+        assert "Nothing is after this song." not in text
+
+        message.edit.reset_mock()
+        view.stop()
+        later = _named("Later")
+        assert await queue_tracks(member, guild, [later]) == "Added Later."
+        message.edit.assert_not_awaited()
+        assert "Later" not in _text(view)
+    finally:
+        view.stop()
+        await stop_track(guild)

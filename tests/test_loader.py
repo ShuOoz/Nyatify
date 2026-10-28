@@ -42,15 +42,16 @@ def test_feature_packages_follow_the_cog_that_owns_them():
 
 
 def test_music_modules_reload_dependencies_first():
-    import music.commands.player  # noqa: F401
-    import music.commands.play  # noqa: F401
+    import music.player.view  # noqa: F401
+    import music.play.search  # noqa: F401
 
     once, cyclic = _reload_order(_loaded_feature_modules(("music",)))
     order = once + cyclic
     assert order.index("music.source") < order.index("music.lavalink")
     assert order.index("music.lavalink") < order.index("music.playback")
-    assert order.index("music.playback") < order.index("music.commands.player")
-    assert order.index("music.commands.player") < order.index("music.commands.play")
+    assert order.index("music.panel") < order.index("music.play.search")
+    assert order.index("music.play.search") < order.index("music.play")
+    assert order.index("music.playback") < order.index("music.play")
 
 
 def test_reload_packages_picks_up_an_imported_name(tmp_path, monkeypatch):

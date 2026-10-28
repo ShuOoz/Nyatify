@@ -98,7 +98,7 @@ def cog_feature_packages(name: str) -> tuple[str, ...]:
 def reload_cog_modules(name: str) -> list[str]:
     """Reload the cog's feature modules so a later cog reload sees new code.
 
-    discord.py reloads the cog file only. A name imported from `music.commands.player`
+    discord.py reloads the cog file only. A name imported from `music.player.view`
     would keep the copy loaded at startup.
     """
     packages = cog_feature_packages(name)

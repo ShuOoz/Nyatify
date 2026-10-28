@@ -70,8 +70,26 @@ def fresh_state(base):
 @pytest.fixture(autouse=True)
 def _fresh_state(tmp_path):
     """Saved exits, phones, sit-outs and guests stay in the test tmp dir."""
+    import music.playback as playback
+    import music.archive as archive
+
     restore = fresh_state(tmp_path)
+    previous = archive.PATH
+    archive.PATH = tmp_path / "music_session.json"
+    archive._book = None
+    archive._cache_path = None
+    playback._lines.clear()
+    playback._heard.clear()
+    playback._missing.clear()
+    playback._requesters.clear()
     yield
+    playback._lines.clear()
+    playback._heard.clear()
+    playback._missing.clear()
+    playback._requesters.clear()
+    archive.PATH = previous
+    archive._book = None
+    archive._cache_path = None
     restore()
 
 

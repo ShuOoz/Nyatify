@@ -1,0 +1,189 @@
+"""Turn a request into a track. No Discord login and no Lavalink node."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+
+import wavelink
+
+from music.lavalink import Found, find_songs
+from music.source import (
+    GENRES,
+    MATCHES,
+    canonical_url,
+    import_link,
+    needs_redirect,
+    normalize_platform,
+    platform_key,
+    request_mode,
+    search_track,
+    take_tracks,
+    track_query,
+)
+
+def test_platform_names():
+    assert normalize_platform(None) == "youtube"
+    assert normalize_platform("Spotify") == "spotify"
+    assert normalize_platform("apple") == "apple"
+    assert normalize_platform("SoundCloud") == "soundcloud"
+    assert normalize_platform("NetEase") == "netease"
+    assert normalize_platform("deezer") == "youtube"
+    assert platform_key("https://geo.music.apple.com/us/album/x/1") == "apple"
+    assert platform_key("https://y.music.163.com/m/song?id=1") == "netease"
+    assert platform_key("https://m.soundcloud.com/rick/never") == "soundcloud"
+    assert platform_key("https://www.m.soundcloud.com/rick/never") == "soundcloud"
+
+def test_a_link_keeps_its_shape():
+    assert request_mode("one wish") == "name"
+    assert request_mode("https://www.youtube.com/watch?v=abc") == "track"
+    assert request_mode("https://www.youtube.com/watch?v=abc&list=PL1") == "track"
+    assert request_mode("https://youtu.be/abc") == "track"
+    assert request_mode("https://www.youtube.com/playlist?list=PL1") == "playlist"
+    assert request_mode("https://open.spotify.com/playlist/abc") == "playlist"
+    assert request_mode("https://music.apple.com/us/playlist/evening/pl.1") == "playlist"
+    assert request_mode("https://soundcloud.com/user/sets/evening") == "playlist"
+    assert request_mode("https://music.163.com/playlist?id=1") == "playlist"
+    assert request_mode("https://music.163.com/#/playlist?id=1") == "playlist"
+    assert request_mode("https://music.163.com/song?id=1") == "track"
+    assert request_mode("https://open.spotify.com/album/abc") == "playlist"
+    assert request_mode("https://music.apple.com/us/album/name/1") == "playlist"
+    assert request_mode("https://music.163.com/album?id=1") == "playlist"
+    assert request_mode("https://open.spotify.com/artist/abc") == "artist"
+    assert request_mode("https://music.apple.com/us/artist/name/1") == "artist"
+    assert request_mode("https://music.apple.com/us/album/animals/1533388849?i=1533388859") == "track"
+    assert import_link("https://music.apple.com/us/album/animals/1533388849?i=1533388859") is None
+    assert request_mode("https://soundcloud.com/user/album-of-the-year") == "track"
+    assert request_mode("https://soundcloud.com/user/artist-name") == "track"
+    assert request_mode("https://soundcloud.com/user/playlist-night") == "track"
+    assert request_mode("https://music.apple.com/us/song/artists-choice/1") == "track"
+    assert request_mode("https://open.spotify.com/intl-de/album/abc") == "playlist"
+    assert ("Jazz", "jazz piano") in GENRES
+    assert ("Rock", "classic rock") in GENRES
+    assert all(len(phrase.split()) >= 2 for _, phrase in GENRES)
+    assert all(phrase != label.casefold() for label, phrase in GENRES)
+
+def test_track_query_keeps_names_and_supported_links():
+    assert track_query("  ocean   drive ") == "ocean drive"
+    assert track_query("") == ""
+    assert track_query("   ") == ""
+    link = "https://www.youtube.com/watch?v=abc"
+    assert track_query(link) == link
+    assert track_query("https://youtu.be/abc") == "https://youtu.be/abc"
+    assert track_query("https://music.youtube.com/watch?v=abc") == "https://music.youtube.com/watch?v=abc"
+    spotify = "https://open.spotify.com/track/abc"
+    assert track_query(spotify) == spotify
+    apple = "https://music.apple.com/us/song/never-gonna-give-you-up/1559885421"
+    assert track_query(apple) == apple
+    soundcloud = "https://soundcloud.com/rick-astley-official/never-gonna-give-you-up"
+    assert track_query(soundcloud) == soundcloud
+    mobile = "https://m.soundcloud.com/rick-astley-official/never-gonna-give-you-up"
+    assert track_query(mobile) == "https://soundcloud.com/rick-astley-official/never-gonna-give-you-up"
+    assert track_query("https://on.soundcloud.com/abc") == "https://on.soundcloud.com/abc"
+    assert track_query("https://spotify.link/abc") == "https://spotify.link/abc"
+    assert needs_redirect("https://on.soundcloud.com/abc")
+    assert needs_redirect("https://spotify.link/abc")
+    assert import_link("https://open.spotify.com/album/abc") == "https://open.spotify.com/album/abc"
+    assert import_link("https://music.apple.com/us/album/name/123") == (
+        "https://music.apple.com/us/album/name/123"
+    )
+    assert import_link("https://www.youtube.com/watch?v=abc&list=PLxxxx") == (
+        "https://www.youtube.com/playlist?list=PLxxxx"
+    )
+    assert import_link("https://music.youtube.com/watch?v=abc&list=PLxxxx") == (
+        "https://www.youtube.com/playlist?list=PLxxxx"
+    )
+    assert import_link("https://www.youtube.com/watch?v=abc") is None
+    assert import_link("https://open.spotify.com/playlist/abc") == "https://open.spotify.com/playlist/abc"
+    assert track_query("https://geo.music.apple.com/us/album/x/1") == "https://music.apple.com/us/album/x/1"
+    assert track_query("https://y.music.163.com/m/song?id=1") == "https://music.163.com/m/song?id=1"
+    assert track_query("open.spotify.com/track/abc") == "https://open.spotify.com/track/abc"
+    netease = "https://music.163.com/song?id=186016"
+    assert track_query(netease) == netease
+    assert track_query("https://music.163.com/#/song?id=186016") == "https://music.163.com/#/song?id=186016"
+    apple_song = "https://music.apple.com/us/album/animals/1533388849?i=1533388859"
+    assert track_query(apple_song) == "https://music.apple.com/us/song/1533388859"
+    assert track_query("https://embed.music.apple.com/us/album/animals/1?i=2&uo=4") == (
+        "https://music.apple.com/us/song/2"
+    )
+    assert track_query("https://open.spotify.com/embed/track/abc?si=1") == "https://open.spotify.com/track/abc"
+    assert track_query("https://open.spotify.com/intl-de/track/abc") == "https://open.spotify.com/track/abc"
+    assert canonical_url(apple_song + "&uo=4") == "https://music.apple.com/us/song/1533388859"
+    assert canonical_url("https://open.spotify.com/embed/intl-en/track/abc") == (
+        "https://open.spotify.com/track/abc"
+    )
+
+async def test_soundcloud_search_drops_previews(monkeypatch):
+    preview = MagicMock(length=30_000, is_preview=False, title="Billie Jean")
+    marked = MagicMock(length=248_000, is_preview=True, title="Snippet")
+    full = MagicMock(length=248_000, is_preview=False, title="Beat It")
+    found = AsyncMock(return_value=[preview, marked, full])
+    monkeypatch.setattr("music.lavalink.node_is_ready", lambda: True)
+    monkeypatch.setattr("music.source.search_track", found)
+    guild = MagicMock()
+
+    songs = await find_songs(guild, "michael jackson", "soundcloud")
+    assert isinstance(songs, Found)
+    assert songs.tracks == [full]
+
+    youtube = await find_songs(guild, "michael jackson", "youtube")
+    assert isinstance(youtube, Found)
+    assert youtube.tracks == [preview, marked, full]
+
+    found.return_value = [preview]
+    direct = await find_songs(guild, "https://soundcloud.com/mj/billie-jean", "youtube")
+    assert isinstance(direct, Found)
+    assert direct.tracks == [preview]
+
+    found.return_value = [marked]
+    assert await find_songs(guild, "https://soundcloud.com/mj/snippet", "youtube") == (
+        "Nothing on SoundCloud matched that."
+    )
+
+def test_take_tracks_follows_the_link_shape():
+    songs = ["one", "two", "three", "four", "five", "six"]
+    assert take_tracks(songs, "name") == songs
+    assert take_tracks(["x"] * (MATCHES + 3), "name") == ["x"] * MATCHES
+    assert take_tracks(songs, "track") == ["one"]
+    assert take_tracks(["x"] * (MATCHES + 3), "artist") == ["x"] * MATCHES
+    assert take_tracks(songs, "playlist") == songs
+    playlist = type("Playlist", (), {"tracks": songs})()
+    assert take_tracks(playlist, "playlist") == songs
+    assert take_tracks(playlist, "name") == songs
+    assert take_tracks(None, "name") == []
+    marked = type("Playlist", (), {"tracks": songs, "selected": 2})()
+    assert take_tracks(marked, "track") == ["three"]
+    assert take_tracks(marked, "playlist") == songs
+    assert take_tracks(type("Playlist", (), {"tracks": songs, "selected": -1})(), "track") == ["one"]
+
+async def test_search_uses_the_chosen_platform(monkeypatch):
+    called = {}
+
+    async def search(query, *, source=None):
+        called["query"] = query
+        called["source"] = source
+        return []
+
+    monkeypatch.setattr(wavelink.Playable, "search", search)
+    assert await search_track("ocean drive") == []
+    assert called == {"query": "ocean drive", "source": wavelink.TrackSource.YouTube}
+
+    called.clear()
+    assert await search_track("ocean drive", "spotify") == []
+    assert called == {"query": "ocean drive", "source": "spsearch"}
+
+    called.clear()
+    assert await search_track("ocean drive", "apple") == []
+    assert called == {"query": "ocean drive", "source": "amsearch"}
+
+    called.clear()
+    assert await search_track("ocean drive", "soundcloud") == []
+    assert called == {"query": "ocean drive", "source": "scsearch"}
+
+    called.clear()
+    assert await search_track("晴天", "netease") == []
+    assert called == {"query": "晴天", "source": "ntsearch"}
+
+    called.clear()
+    link = "https://open.spotify.com/track/abc"
+    assert await search_track(link, "youtube") == []
+    assert called == {"query": link, "source": None}
