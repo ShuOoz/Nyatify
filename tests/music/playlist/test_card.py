@@ -13,13 +13,14 @@ from music.panel import (
     MARK_ADD,
     MARK_BACK,
     MARK_CLOSE,
+    MARK_LIST,
     MARK_NEXT,
     MARK_SEARCH,
     RADIO_MARK,
     song_row,
 )
 from music.playlist.card import (
-    LiveLine,
+    PlaylistCard,
     HISTORY,
     LABEL_ADJUST,
     LABEL_EMPTY,
@@ -27,7 +28,6 @@ from music.playlist.card import (
     LABEL_REMOVE,
     LABEL_YOUR,
     MARK_DELETE,
-    MARK_LINE,
     MARK_MINUS,
     MARK_SAVE,
     PICK,
@@ -42,12 +42,17 @@ from music.playlist.card import (
 )
 from music.archive import SavedSong, save_song
 from music.lavalink import Found
-from music.playback import next_track, played, queue_tracks, queued, stop_track, tune_track, Queued
+from music.playback import next_track, played, queue_tracks, queued, stop_track, apply_playback, Queued
 
-from tests.music.support import _cards_caught_up, _named
+from tests.music.support import _cards_caught_up, _named, _scene
 from tests.music.playlist.support import _button, _line_up, _menu, _press, _sections, _text
 
-def test_the_queue_names_who_asked_and_what_is_waiting():
+def test_the_queue_names_the_line():
+    """The queue names who asked and what is waiting. A total hides until every song has a length."""
+    case_the_queue_names_who_asked_and_what_is_waiting()
+    case_a_total_hides_until_every_song_has_a_length()
+
+def case_the_queue_names_who_asked_and_what_is_waiting():
     current = Queued("Heart", "apple", "https://example.com/a", True, False, "Mac", 182_000, 4)
     assert now_text(current) == (
         "### Now Playing\n**[Heart](https://example.com/a)**\nMac · 3:02 · Apple Music"
@@ -81,7 +86,7 @@ def test_the_queue_names_who_asked_and_what_is_waiting():
     grey = Queued("Easy", "spotify", None, False, False, "Mac Ayres", 314_000, 4)
     assert queue_row(1, grey).split("\n", 1)[1] == "-# \u2007\u2008\u00a0Mac Ayres · 5:14 · Spotify"
 
-def test_a_total_hides_until_every_song_has_a_length():
+def case_a_total_hides_until_every_song_has_a_length():
     known = SavedSong("A", "youtube", "https://example.com/a", "Mac", 60_000)
     missing = SavedSong("B", "youtube", "https://example.com/b", "Mac", 0)
     assert _song_span(()) == 0
@@ -97,21 +102,21 @@ async def test_the_star_waits_until_a_song_has_played(tmp_path):
     store = GuildConfig(tmp_path / "guild.json")
     guild = MagicMock()
     guild.id = 15
-    view = LiveLine(guild, store)
+    view = PlaylistCard(guild, store)
     one = MagicMock()
     one.id = 4
     press = _press(one)
     assert view.panel == QUEUE
-    assert _button(view, MARK_LINE).disabled is True
+    assert _button(view, MARK_LIST).disabled is True
     assert "Loved" not in _text(view)
     rows = [item for item in view.walk_children() if isinstance(item, discord.ui.ActionRow)]
-    assert rows[0].children[-1].label == MARK_LINE
+    assert rows[0].children[-1].label == MARK_LIST
     assert rows[0].children[0].style == discord.ButtonStyle.primary
 
     await _button(view, HISTORY).callback(press)
     assert view.panel == HISTORY
     assert MARK_SAVE == "\u2726"
-    assert MARK_LINE == "\u2261"
+    assert MARK_LIST == "\u2261"
     assert _button(view, MARK_SAVE).label == MARK_SAVE
     assert _button(view, MARK_SAVE).disabled is True
     assert _button(view, MARK_SAVE).style == discord.ButtonStyle.secondary
@@ -136,15 +141,32 @@ async def test_the_star_waits_until_a_song_has_played(tmp_path):
     assert "Loved" not in _text(view)
 
 async def test_the_queue_pages_and_removes(tmp_path):
-    titles = [f"Song {index}" for index in range(1, 8)]
-    guild, member, _player, tracks, note = await _line_up(9200, titles)
+    """The queue card turns a page, a song can be removed, a list and a played song open from it, and search asks for a name."""
+    for name, case in (
+        ("page", case_the_queue_card_turns_the_page),
+        ("remove", case_removing_a_song_needs_the_voice_channel),
+        ("saved", case_a_saved_list_opens_from_the_queue),
+        ("played", case_a_played_song_lines_up_behind_the_queue),
+        ("search", case_search_from_the_queue_asks_for_a_name),
+    ):
+        spot = tmp_path / name
+        spot.mkdir()
+        await _scene(case, spot)
+
+
+def _queue_line():
+    return [f"Song {index}" for index in range(1, 8)]
+
+
+async def case_the_queue_card_turns_the_page(tmp_path):
+    guild, member, _player, tracks, note = await _line_up(9200, _queue_line())
     store = GuildConfig(tmp_path / "guild.json")
     try:
         assert note == "Playing Song 1."
         tracks[0].author = "Mac"
         tracks[0].length = 182_000
         tracks[1].length = 120_000
-        view = LiveLine(guild, store)
+        view = PlaylistCard(guild, store)
         view.message = MagicMock()
         view.message.edit = AsyncMock()
         view.to_components()
@@ -161,7 +183,7 @@ async def test_the_queue_pages_and_removes(tmp_path):
         assert [getattr(child, "panel", None) for child in rows[0].children] == [
             QUEUE, HISTORY, PLAYLISTS, None,
         ]
-        assert rows[0].children[-1].label == MARK_LINE
+        assert rows[0].children[-1].label == MARK_LIST
         assert len(set(labels)) == 4
         assert [label.split(name) for label, name in zip(labels, (QUEUE, HISTORY, PLAYLISTS))] == [
             ["\u3164\uffa0\uffa0\u00a0", "\u00a0\u3164\uffa0\uffa0"],
@@ -211,6 +233,20 @@ async def test_the_queue_pages_and_removes(tmp_path):
         assert "Song 7" in _text(view)
         assert "Song 2" not in _text(view)
         assert len(_sections(view)) == 2
+    finally:
+        await stop_track(guild)
+
+
+async def case_removing_a_song_needs_the_voice_channel(tmp_path):
+    guild, member, _player, _tracks, _note = await _line_up(9201, _queue_line())
+    store = GuildConfig(tmp_path / "guild.json")
+    try:
+        view = PlaylistCard(guild, store)
+        view.message = MagicMock()
+        view.message.edit = AsyncMock()
+        press = _press(member)
+        await _button(view, MARK_NEXT).callback(press)
+        assert "Song 7" in _text(view)
 
         press = _press()
         await _button(view, MARK_MINUS, 6).callback(press)
@@ -222,7 +258,14 @@ async def test_the_queue_pages_and_removes(tmp_path):
         assert "Song 7" not in _text(view)
         assert [row.title for row in queued(guild)][-1] == "Song 6"
         view.message.edit.assert_awaited()
+    finally:
+        await stop_track(guild)
 
+
+async def case_a_saved_list_opens_from_the_queue(tmp_path):
+    guild, member, _player, _tracks, _note = await _line_up(9202, _queue_line())
+    store = GuildConfig(tmp_path / "guild.json")
+    try:
         save_song(
             store,
             guild.id,
@@ -230,6 +273,7 @@ async def test_the_queue_pages_and_removes(tmp_path):
             SavedSong("Song 2", "youtube", "https://example.com/song-2"),
             member.id,
         )
+        view = PlaylistCard(guild, store)
         press = _press(member)
         await _button(view, PLAYLISTS).callback(press)
         assert pick_text() in _text(view)
@@ -248,8 +292,18 @@ async def test_the_queue_pages_and_removes(tmp_path):
         assert empty_text("Evening") not in _text(view)
         assert f"Page 1/1  |  1 song  |  <@{member.id}>" in _text(view)
         assert "0:00" not in _text(view)
+    finally:
+        await stop_track(guild)
 
+
+async def case_a_played_song_lines_up_behind_the_queue(tmp_path):
+    guild, member, _player, tracks, _note = await _line_up(9203, _queue_line())
+    store = GuildConfig(tmp_path / "guild.json")
+    try:
+        tracks[0].length = 182_000
+        view = PlaylistCard(guild, store)
         await next_track(guild)
+        press = _press(member)
         await _button(view, HISTORY).callback(press)
         assert [row.title for row in played(guild)] == ["Song 1"]
         assert "Song 1" in _text(view)
@@ -267,11 +321,19 @@ async def test_the_queue_pages_and_removes(tmp_path):
         assert "Song 1" not in _text(view)
         assert [row.title for row in queued(guild)] == [*waiting, "Song 1"]
         assert queued(guild)[0].title == waiting[0]
+    finally:
+        await stop_track(guild)
 
+
+async def case_search_from_the_queue_asks_for_a_name(tmp_path):
+    guild, member, _player, _tracks, _note = await _line_up(9204, ["Song 1", "Song 2"])
+    store = GuildConfig(tmp_path / "guild.json")
+    try:
+        view = PlaylistCard(guild, store)
         found = []
 
-        async def searched(_interaction, query, _platform=None, fresh=False):
-            found.append((query, fresh))
+        async def searched(_interaction, query, _platform=None, new_message=False):
+            found.append((query, new_message))
             return True
 
         view.open_search = searched
@@ -292,9 +354,16 @@ async def test_the_queue_pages_and_removes(tmp_path):
     finally:
         await stop_track(guild)
 
-async def test_an_open_queue_shows_a_song_just_added():
+async def test_an_open_queue_stays_current(monkeypatch):
+    """An open queue shows a song just added and a new platform. A page and a tab keep the same buttons."""
+    await case_an_open_queue_shows_a_song_just_added()
+    with monkeypatch.context() as patch:
+        await case_an_open_queue_shows_a_new_platform(patch)
+    await case_a_page_and_a_tab_keep_the_same_buttons()
+
+async def case_an_open_queue_shows_a_song_just_added():
     guild, member, _player, _tracks, note = await _line_up(9400, ["Alpha"])
-    view = LiveLine(guild, MagicMock())
+    view = PlaylistCard(guild, MagicMock())
     try:
         assert note == "Playing Alpha."
         assert "Nothing is after this song." not in _text(view)
@@ -322,9 +391,9 @@ async def test_an_open_queue_shows_a_song_just_added():
         await stop_track(guild)
 
 
-async def test_an_open_queue_shows_a_new_platform(monkeypatch):
+async def case_an_open_queue_shows_a_new_platform(monkeypatch):
     guild, _member, _player, tracks, note = await _line_up(9402, ["Alpha", "Beta"])
-    view = LiveLine(guild, MagicMock())
+    view = PlaylistCard(guild, MagicMock())
     try:
         assert note == "Playing Alpha."
         tracks[0].author = "Mac"
@@ -342,7 +411,7 @@ async def test_an_open_queue_shows_a_new_platform(monkeypatch):
             return Found("Alpha Mac", "spotify", [other], False)
 
         monkeypatch.setattr("music.playback.find_songs", search)
-        assert await tune_track(guild, 100, "spotify", None) is None
+        assert await apply_playback(guild, 100, "spotify", None) is None
         await _cards_caught_up()
         message.edit.assert_awaited()
         text = _text(view)
@@ -371,9 +440,9 @@ def _component_ids(view) -> list[int]:
     return found
 
 
-async def test_a_page_and_a_tab_keep_the_same_buttons():
+async def case_a_page_and_a_tab_keep_the_same_buttons():
     guild, _member, _player, _tracks, _note = await _line_up(9502, [f"Song {index}" for index in range(7)])
-    view = LiveLine(guild, MagicMock())
+    view = PlaylistCard(guild, MagicMock())
     try:
         assert len(_component_ids(view)) == len(set(_component_ids(view)))
         next_button = _button(view, MARK_NEXT)

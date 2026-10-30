@@ -8,6 +8,7 @@ import logging
 import discord
 
 from announce import ACCENT_COLOR
+from music.lavalink import find_songs
 from music.panel import (
     LABEL_PLAYER,
     LABEL_QUEUE,
@@ -32,17 +33,12 @@ from music.panel import (
     show_note,
     song_row,
 )
-from music.playback import leave_if_idle, warm_voice
+from music.playback import now_playing, paused_away, leave_if_idle, queue_tracks, warm_voice
 from music.source import normalize_platform, platform_label, platform_pairs
 
 log = logging.getLogger(__name__)
 
 TITLE = "## Osaka Play"
-
-
-def _pkg():
-    import sys
-    return sys.modules["music.play"]
 
 
 def _window(count: int, page: int) -> tuple[int, int, int, int]:
@@ -109,6 +105,10 @@ class MatchList(_SearchCard):
         self._closed = False
         self._switch = 0
         self._pending = 0
+        # A site already opened. Switching back uses this instead of searching again.
+        self._cached: dict[str, object] = {}
+        if tracks:
+            self._cached[self.platform] = ("rows", list(tracks))
         self._box: discord.ui.Container | None = None
         if tracks:
             self.note = None
@@ -230,37 +230,56 @@ class MatchList(_SearchCard):
     async def _queue(self, interaction: discord.Interaction, track: object, platform: str) -> None:
         if await self._busy(interaction):
             return
-        cold = getattr(interaction.guild, "voice_client", None) is None
+        cold = (
+            getattr(interaction.guild, "voice_client", None) is None
+            and not paused_away(interaction.guild)
+        )
         if cold:
             warm_voice(interaction.user, interaction.guild)
-        title = _plain(getattr(track, "title", None), "that song")
+        title = _plain(getattr(track, "title", None), "Unknown")
         line = "Something went wrong while starting the song."
         try:
             # Already on a song, so this one only waits. "Starting" is for the song that begins now.
-            state = _pkg().now_playing(interaction.guild)
+            state = now_playing(interaction.guild)
             if state is None or not state.has_track:
                 await show_note(interaction, f"Starting {title}")
             elif not interaction.response.is_done():
                 await interaction.response.defer(ephemeral=True)
+            preview = getattr(self, "on_preview", None)
+            early = None
+            if preview is not None and (state is None or not state.has_track):
+                from music.player.card import settle, stage
+
+                stage(interaction.guild, track)
+                early = asyncio.create_task(preview(interaction), name="music-player-soon")
             try:
-                line = await _pkg().queue_tracks(
+                line = await queue_tracks(
                     interaction.user, interaction.guild, [track], platform,
                 )
             except Exception:
                 log.exception("music play failed")
+            kept = False
+            if early is not None:
+                try:
+                    await early
+                except Exception:
+                    log.warning("music player could not open early", exc_info=True)
+                from music.player.card import settle
+
+                kept = await settle(interaction.guild)
             await finish_note(interaction, line)
-            if line.startswith("Playing ") and self.on_playing is not None:
+            if line.startswith("Playing ") and self.on_playing is not None and not kept:
                 await self.on_playing(interaction)
             if cold and not line.startswith(("Playing ", "Added ")):
                 asyncio.create_task(leave_if_idle(interaction.guild), name="music-idle")
         finally:
-            self._working = False
+            self._end_press()
 
     async def on_player(self, interaction: discord.Interaction) -> None:
         if await self._busy(interaction):
             return
         try:
-            state = _pkg().now_playing(interaction.guild)
+            state = now_playing(interaction.guild)
             if state is None or not state.has_track:
                 await _note(interaction, "Nothing is playing.")
                 return
@@ -268,7 +287,7 @@ class MatchList(_SearchCard):
             opener = self.open_player if self.open_player is not None else self.on_started
             await opener(interaction)
         finally:
-            self._working = False
+            self._end_press()
 
     async def on_queue(self, interaction: discord.Interaction) -> None:
         if await self._busy(interaction):
@@ -280,7 +299,7 @@ class MatchList(_SearchCard):
                 return
             await self.open_queue(interaction)
         finally:
-            self._working = False
+            self._end_press()
 
     async def on_search(self, interaction: discord.Interaction) -> None:
         if not await self._can_search(interaction):
@@ -331,10 +350,21 @@ class MatchList(_SearchCard):
         self._pending += 1
         try:
             await interaction.response.defer()
-            found = await self._find(interaction, chosen)
+            cached = self._cached.get(chosen)
+            if cached is not None:
+                found = cached
+            else:
+                found = await self._find(interaction, chosen)
+                if not (isinstance(found, str) and not _swappable(found)):
+                    self._cached[chosen] = found
             if token != self._switch or self._closed:
                 return
-            if isinstance(found, str) and not _swappable(found):
+            if isinstance(found, tuple) and found and found[0] == "rows":
+                self.platform = chosen
+                self.tracks = list(found[1])
+                self.note = None
+                self.page = 0
+            elif isinstance(found, str) and not _swappable(found):
                 await _note(interaction, found)
             else:
                 self._take(found, chosen)
@@ -349,7 +379,7 @@ class MatchList(_SearchCard):
 
     async def _find(self, interaction: discord.Interaction, platform: str):
         try:
-            return await _pkg().find_songs(interaction.guild, self.query, platform)
+            return await find_songs(interaction.guild, self.query, platform)
         except Exception:
             log.exception("music search failed")
             return "Something went wrong while starting the song."

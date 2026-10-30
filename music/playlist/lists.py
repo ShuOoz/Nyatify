@@ -4,26 +4,28 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import unicodedata
 
 import discord
 
 from music.archive import (
     NAME_LIMIT, PLAYLIST_LIMIT, SONG_LIMIT, SavedList, SavedSong,
     create_playlist, delete_playlist, find_playlist, list_playlists,
-    playlist_name, replace_songs, save_song,
+    playlist_name, replace_songs, save_song, song_matches,
 )
+from music.lavalink import find_songs, open_recordings
 from music.panel import MARK_ADD, SearchSong, _note, _row, _selected
-from music.playback import leave_if_idle, played, playing_note, warm_voice
+from music.playback import leave_if_idle, paused_away, played, playing_note, queue_tracks, warm_voice
+from music.playback.remember import warm_saved
 from music.playlist.popups import FindInList, NamePlaylist, RemovePlaylist, SaveSong
 from music.playlist.card import (
     HISTORY, MARK_MINUS, PICK, PLAYLISTS, _READ_AT_ONCE,
-    _BUSY, _as_saved, _defer, _guild_num, _heard, _list_noun, _menu_gap, _mixed_platforms,
+    _as_saved, _defer, _guild_num, _heard, _list_noun, _menu_gap, _mixed_platforms,
     _person, _saved_span, _song_noun, _song_span, _track_author, _track_length,
     empty_text, pick_text, saved_row,
 )
 from music.source import (
-    canonical_url, import_link, is_link, needs_redirect, platform_line, track_query,
+    canonical_url, import_link, is_link, kept_url, needs_redirect, platform_line,
+    remembered_share, track_query, follow_redirect,
 )
 
 log = logging.getLogger(__name__)
@@ -33,102 +35,22 @@ _BACK = "pick" + ("\u200b" * (NAME_LIMIT + 1 - len("pick")))
 _FAILED = "Something went wrong while starting the song."
 
 
-def _pkg():
-    import sys
-    return sys.modules["music.playlist"]
-
-
 async def _can_click(view, interaction: discord.Interaction, *, closed: bool = True) -> bool:
     if closed and view.is_finished():
         await _defer(interaction)
         return False
-    if view._working:
-        await _note(interaction, _BUSY)
-        return False
     return True
 
 
-# An apostrophe sits inside a word. A hyphen still splits, so "slow-down" is two words.
-_APOSTROPHE = frozenset("'’ʼ‘")
-
-
-def song_matches(query: str, song: SavedSong) -> bool:
-    """Words may be out of order. A short word must be typed. A longer word may be one or two edits off."""
-    needle = _plain(query)
-    if not needle:
-        return False
-    title, author = _plain(song.title), _plain(song.author)
-    pieces = f"{title} {author}".split()
-    if pieces and all(_word_hits(word, pieces) for word in needle.split()):
-        return True
-    compact = needle.replace(" ", "")
-    # "REM" is "R.E.M." joined. Under four letters, only that exact join counts.
-    if _joined(compact, title.split()) or _joined(compact, author.split()):
-        return True
-    return len(compact) >= 4 and (_fuzzy(compact, title) or _fuzzy(compact, author))
-
-
-def _plain(text: str) -> str:
-    folded = unicodedata.normalize("NFKD", text)
-    folded = "".join(ch for ch in folded if not unicodedata.combining(ch)).casefold()
-    chars = ["" if ch in _APOSTROPHE else ch if ch.isalnum() else " " for ch in folded]
-    return " ".join("".join(chars).split())
-
-def _word_hits(word: str, pieces: list[str]) -> bool:
-    # The query may start a longer song word. "beatles" must not match "beat".
-    limit = 0 if len(word) <= 3 else 1 if len(word) <= 6 else 2
-    for piece in pieces:
-        if word == piece or (len(word) >= 3 and piece.startswith(word)):
-            return True
-        if limit == 0 or abs(len(word) - len(piece)) > limit:
-            continue
-        dist = _distance(word, piece)
-        if dist <= limit and (word[0] == piece[0] or (len(word) >= 5 and dist <= 1)):
-            return True
-    return False
-
-def _joined(query: str, words: list[str]) -> bool:
-    for start in range(len(words)):
-        joined = ""
-        for word in words[start:]:
-            joined += word
-            if joined == query:
-                return True
-            if len(joined) > len(query):
-                break
-    return False
-
-def _fuzzy(query: str, field: str) -> bool:
-    compact = field.replace(" ", "")
-    limit = 1 if len(query) <= 6 else 2
-    if not query or not compact or query[0] != compact[0] or abs(len(query) - len(compact)) > limit:
-        return False
-    return _distance(query, compact) <= limit
-
-def _distance(left: str, right: str) -> int:
-    """Swapping two neighbouring letters counts as one edit."""
-    if left == right:
-        return 0
-    previous, current = [0] * (len(right) + 1), list(range(len(right) + 1))
-    for i, a in enumerate(left, start=1):
-        row = [i]
-        for j, b in enumerate(right, start=1):
-            best = min(current[j] + 1, row[-1] + 1, current[j - 1] + (a != b))
-            if i > 1 and j > 1 and a == right[j - 2] and left[i - 2] == b:
-                best = min(best, previous[j - 2] + 1)
-            row.append(best)
-        previous, current = current, row
-    return current[-1]
-
-
-def _spare_name(store: object, guild_id: int) -> str:
+def _free_name(store: object, guild_id: int, wanted: str) -> str:
+    """`wanted`, or `wanted 2` when that name is already a playlist."""
     taken = {saved.name.casefold() for saved in list_playlists(store, guild_id)}
-    number = 1
-    while True:
-        name = "Playlist" if number == 1 else f"Playlist {number}"
-        if name.casefold() not in taken:
-            return name
+    name, number = wanted, 2
+    while name.casefold() in taken:
+        suffix = f" {number}"
+        name = f"{wanted[: NAME_LIMIT - len(suffix)].rstrip()}{suffix}"
         number += 1
+    return name
 
 
 def _imported(found: object) -> tuple[list[SavedSong], int]:
@@ -140,11 +62,12 @@ def _imported(found: object) -> tuple[list[SavedSong], int]:
     site = platform if isinstance(platform, str) else "youtube"
     songs, seen = [], set()
     for track in tracks:
-        raw = getattr(track, "uri", None)
-        url = canonical_url(raw) if isinstance(raw, str) and raw.startswith(("http://", "https://")) else ""
-        if not url or url in seen:
+        raw = remembered_share(track) or getattr(track, "uri", None)
+        url = kept_url(raw) if isinstance(raw, str) and raw.startswith(("http://", "https://")) else ""
+        ident = canonical_url(url) if url else ""
+        if not ident or ident in seen:
             continue
-        seen.add(url)
+        seen.add(ident)
         if len(songs) >= SONG_LIMIT:
             continue
         title = getattr(track, "title", None)
@@ -158,6 +81,8 @@ def _bare(song: SavedSong) -> bool:
 
 
 def _with_meta(song: SavedSong, author: str, length: int) -> SavedSong:
+    # A blank artist or length does not wipe what is already stored.
+    author, length = author or song.author, length or song.length
     if (author, length) == (song.author, song.length):
         return song
     return SavedSong(song.title, song.platform, song.url, author, length)
@@ -173,14 +98,14 @@ async def _read_list(guild: object, saved: SavedList, seen: set[str]) -> SavedLi
     async def one(song: SavedSong) -> SavedSong:
         async with gate:
             try:
-                found = await _pkg().find_songs(guild, song.url, song.platform, mode="track")
+                found = await find_songs(guild, song.url, song.platform, mode="track")
             except Exception:
                 log.warning("music playlist could not read a song", exc_info=True)
                 found = None
         if not found or isinstance(found, str) or not found.tracks:
             return song
         track = found.tracks[0]
-        return _with_meta(song, _track_author(track) or song.author, _track_length(track) or song.length)
+        return _with_meta(song, _track_author(track), _track_length(track))
 
     fresh = await asyncio.gather(*(one(saved.songs[i]) for i in bare))
     songs = list(saved.songs)
@@ -191,18 +116,6 @@ async def _read_list(guild: object, saved: SavedList, seen: set[str]) -> SavedLi
     if tuple(songs) == saved.songs:
         return None
     return SavedList(saved.name, saved.saver_id, tuple(songs))
-
-
-def _carry(current: SavedList, filled: SavedList) -> SavedList:
-    """Artist and length, copied onto the list as it stands now."""
-    known = {song.url: song for song in filled.songs}
-    songs = tuple(
-        song if (found := known.get(song.url)) is None else _with_meta(
-            song, found.author or song.author, found.length or song.length,
-        )
-        for song in current.songs
-    )
-    return current if songs == current.songs else SavedList(current.name, current.saver_id, songs)
 
 
 class _Lists:
@@ -251,7 +164,7 @@ class _Lists:
             if left:
                 await _note(interaction, f"Saved {len(made.songs)} songs. {left} did not fit.")
         finally:
-            self._working = False
+            await self._release()
 
     async def _make(self, interaction: discord.Interaction, guild_id: int, text: str):
         query = track_query(text)
@@ -263,7 +176,7 @@ class _Lists:
             return create_playlist(self.store, guild_id, query, _person(interaction.user))
         if needs_redirect(query):
             await _defer(interaction)
-            followed = await _pkg().follow_redirect(query)
+            followed = await follow_redirect(query)
             if not followed:
                 return "That link did not open."
             query = followed
@@ -271,42 +184,54 @@ class _Lists:
         if query is None:
             return "Paste a playlist link."
         await _defer(interaction)
-        found = await _pkg().find_songs(interaction.guild, query)
+        found = await find_songs(interaction.guild, query)
         if isinstance(found, str):
             return found
-        name = playlist_name(found.name or "") or _spare_name(self.store, guild_id)
         songs, left = _imported(found)
         if not songs:
             return "That playlist has no songs."
+        # A taken name becomes "Name 2". The songs still land on a new list.
+        name = _free_name(self.store, guild_id, playlist_name(found.name or "") or "Playlist")
         created = create_playlist(self.store, guild_id, name, _person(interaction.user), tuple(songs))
         return created if isinstance(created, str) else (created, left)
 
     async def on_remove_ask(self, interaction: discord.Interaction) -> None:
         if not await _can_click(self, interaction):
             return
-        if self.panel != PLAYLISTS or self.opened is None:
+        if not await self._in_room(interaction):
+            return
+        saved = self.opened
+        if self.panel != PLAYLISTS or saved is None:
             await _defer(interaction)
             return
-        await interaction.response.send_modal(RemovePlaylist(self.on_remove_playlist))
+        # The box keeps this name. Another list can open before it is sent.
+        name = saved.name
+        await interaction.response.send_modal(
+            RemovePlaylist(lambda press: self.on_remove_playlist(press, name)),
+        )
 
-    async def on_remove_playlist(self, interaction: discord.Interaction) -> None:
+    async def on_remove_playlist(self, interaction: discord.Interaction, name: str) -> None:
         if await self._busy(interaction):
             return
         try:
-            saved, guild_id = self.opened, _guild_num(self.guild)
-            if saved is None or self.panel != PLAYLISTS or guild_id is None:
+            if not await self._in_room(interaction):
+                return
+            guild_id = _guild_num(self.guild)
+            if guild_id is None:
                 await _defer(interaction)
                 return
             await interaction.response.defer()
-            removed = delete_playlist(self.store, guild_id, saved.name)
+            removed = delete_playlist(self.store, guild_id, name)
             if isinstance(removed, str):
                 await _note(interaction, removed)
                 return
-            self._choose(None)
+            opened = self.opened
+            if self.panel == PLAYLISTS and opened is not None and opened.name.casefold() == removed.name.casefold():
+                self._choose(None)
             self.paint()
             await self._push()
         finally:
-            self._working = False
+            await self._release()
 
     async def on_pick(self, interaction: discord.Interaction) -> None:
         # Read before the first wait. The next click replaces this menu's values.
@@ -314,24 +239,22 @@ class _Lists:
         if not await _can_click(self, interaction, closed=False):
             return
         if chosen == _BACK:
-            self._choose(None)
-            await self._redraw(interaction)
-            return
-        found = self._named_list(chosen or "")
-        if isinstance(found, str):
-            await _note(interaction, found)
-            return
+            found = None
+        else:
+            found = self._named_list(chosen or "")
+            if isinstance(found, str):
+                await _note(interaction, found)
+                return
         self._choose(found)
         await self._show_songs(interaction)
 
     def _lists(self, box: discord.ui.Container) -> tuple[int, int, int | None, str]:
         lists = self._saved_lists()
-        self._fill_menu()
-        box.add_item(_row(self.menu, id=18))
+        self._fill_menu(box)
         box.add_item(discord.ui.TextDisplay(pick_text(), id=17))
         return 1, len(lists), _saved_span(lists), _list_noun(len(lists))
 
-    def _fill_menu(self) -> None:
+    def _fill_menu(self, box: discord.ui.Container) -> None:
         """The shelf leaves every name unselected. An open list shows that name."""
         lists = self._saved_lists()
         opened = self.opened.name.casefold() if self.panel == PLAYLISTS and self.opened is not None else ""
@@ -346,6 +269,7 @@ class _Lists:
         self.menu.placeholder, self.menu.disabled = PICK, not options
         # An empty shelf still needs one option. It stays unselected.
         self.menu.options = options or [discord.SelectOption(label="\u200b", value="none")]
+        box.add_item(_row(self.menu, id=18))
 
     def _saved_lists(self) -> list[SavedList]:
         guild_id = _guild_num(self.guild)
@@ -368,9 +292,6 @@ class _Lists:
         await interaction.response.send_modal(SearchSong(self._hand_off, title="Search"))
 
     async def _narrowed(self, interaction: discord.Interaction, query: str) -> None:
-        if self._working:
-            await _note(interaction, _BUSY)
-            return
         saved = self.opened
         if saved is None or self.panel != PLAYLISTS or self.is_finished():
             await _defer(interaction)
@@ -388,17 +309,14 @@ class _Lists:
         if opener is None or self.is_finished():
             await _defer(interaction)
             return
-        if self._working:
-            await _note(interaction, _BUSY)
-            return
-        self._working = True
+        self._begin_press()
         try:
-            await opener(interaction, query, None, fresh=True)
+            await opener(interaction, query, None, new_message=True)
         except Exception:
             log.exception("music search failed")
             await _note(interaction, _FAILED)
         finally:
-            self._working = False
+            await self._release()
 
     async def on_remove(self, interaction: discord.Interaction) -> None:
         if not await _can_click(self, interaction, closed=False):
@@ -419,23 +337,30 @@ class _Lists:
             if saved is None or index < 0 or index >= len(saved.songs):
                 await _defer(interaction)
                 return
-            cold = getattr(interaction.guild, "voice_client", None) is None
+            # A paused song is still current. Joining would sit there in silence.
+            cold = (
+                getattr(interaction.guild, "voice_client", None) is None
+                and not paused_away(interaction.guild)
+            )
             if cold:
                 warm_voice(interaction.user, interaction.guild)
             await interaction.response.defer()
-            opened = await _pkg().open_recordings(interaction.guild, [saved.songs[index]])
+            opened = await open_recordings(interaction.guild, [saved.songs[index]])
             if isinstance(opened, str):
                 await _note(interaction, opened)
                 return
             track, platform = opened.tracks[0]
             try:
-                line = await _pkg().play_now(interaction.user, interaction.guild, track, platform)
+                # Plus lines this song up. It does not cut off the one on now.
+                line = await queue_tracks(
+                    interaction.user, interaction.guild, [track], platform,
+                )
             except Exception:
                 log.exception("music playlist failed")
                 line = _FAILED
             await self._after_play(interaction, line)
         finally:
-            self._working = False
+            await self._release()
             if cold:
                 asyncio.create_task(leave_if_idle(interaction.guild), name="music-idle")
 
@@ -487,9 +412,6 @@ class _Lists:
         await interaction.response.send_modal(SaveSong(lists, lambda press, name: self._kept(press, name, song)))
 
     async def _kept(self, interaction: discord.Interaction, name: str, song: SavedSong) -> None:
-        if self._working:
-            await _note(interaction, _BUSY)
-            return
         guild_id = _guild_num(self.guild)
         if guild_id is None:
             await _defer(interaction)
@@ -502,6 +424,7 @@ class _Lists:
         if isinstance(updated, str):
             await _note(interaction, updated)
             return
+        warm_saved(self.guild, song)
         if self._show_saved(updated):
             await self._push()
         await _note(interaction, f"Saved to {updated.name}.")
@@ -531,8 +454,7 @@ class _Lists:
 
     def _open_list(self, box: discord.ui.Container) -> tuple[int, int, int | None, str]:
         saved = self.opened
-        self._fill_menu()
-        box.add_item(_row(self.menu, id=18))
+        self._fill_menu(box)
         box.add_item(_menu_gap(20))
         visible = self._matched(saved)
         start, stop, pages = self._slice(len(visible))
@@ -556,7 +478,16 @@ class _Lists:
         if current is None:
             self._close_list(saved.songs)
             return
-        merged = current if filled is None else _carry(current, filled)
+        merged = current
+        if filled is not None:
+            # Artist and length, copied onto the list as it stands now.
+            known = {song.url: song for song in filled.songs}
+            songs = tuple(
+                song if (found := known.get(song.url)) is None else _with_meta(song, found.author, found.length)
+                for song in current.songs
+            )
+            if songs != current.songs:
+                merged = SavedList(current.name, current.saver_id, songs)
         if merged is not current:
             merged = replace_songs(self.store, guild_id, merged.name, merged.songs)
         if isinstance(merged, SavedList):
@@ -587,3 +518,5 @@ class _Lists:
             await self._redraw(interaction)
         finally:
             self._working = held
+            if not held:
+                await self._catch_line()

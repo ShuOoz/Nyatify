@@ -12,6 +12,7 @@ import discord
 
 from announce import notice_text, respond
 from config import CONFIG_PATH, settings, upsert_config_values
+from music.player.rule import _words_in
 
 log = logging.getLogger(__name__)
 
@@ -39,14 +40,6 @@ def store_key(key: str) -> None:
     upsert_config_values(CONFIG_PATH, {"LASTFM_API_KEY": key})
 
 
-def _words_in(name: str, text: str) -> bool:
-    """True when every word of `name` is a whole-word run inside `text`."""
-    words = name.casefold().split()
-    hay = text.casefold().split()
-    size = len(words)
-    if not size or size > len(hay):
-        return False
-    return any(hay[index:index + size] == words for index in range(len(hay) - size + 1))
 
 
 def radio_seed(title: str, author: str) -> tuple[str, str] | None:
@@ -112,6 +105,72 @@ async def similar_songs(artist: str, title: str, *, getter: Getter | None = None
     return read_similar(payload)
 
 
+_SIMILAR_TRIES = 3
+
+
+def _heard_query(title: str, author: str) -> str:
+    """Title, plus the artist when that name is not already a whole word in it.
+
+    "Air" is not inside "Airplane". A title that already names the artist
+    searches as that title alone.
+    """
+    if not author or _words_in(author, title):
+        return title
+    return f"{title} {author}"
+
+
+async def another_track(song) -> object | None:
+    """A different recording. Similar names first, then this title."""
+    from music.playback.remember import _text
+
+    title = _text(getattr(song.track, "title", None), "Unknown")
+    author = _text(getattr(song.track, "author", None))
+    for query in await _similar_queries(title, author):
+        track = await _search_other(song, query)
+        if track is not None:
+            return track
+    return await _search_other(song, _heard_query(title, author))
+
+
+async def _similar_queries(title: str, author: str) -> list[str]:
+    import random
+
+    pair = radio_seed(title, author)
+    if pair is None:
+        return []
+    artist, name = pair
+    found = await similar_songs(artist, name)
+    choices = [
+        (other_artist, other_name)
+        for other_artist, other_name in found
+        if other_artist.casefold() != artist.casefold() or other_name.casefold() != name.casefold()
+    ]
+    if not choices:
+        return []
+    random.shuffle(choices)
+    return [
+        f"{other_name} {other_artist}"
+        for other_artist, other_name in choices[:_SIMILAR_TRIES]
+    ]
+
+
+async def _search_other(song, query: str):
+    import wavelink
+
+    from music import source
+    from music.playback.remember import _each, _same_track
+
+    try:
+        found = await source.search_track(query, song.platform)
+    except wavelink.WavelinkException:
+        log.exception("Similar song search failed")
+        return None
+    tracks = _each(found)
+    if song.platform == "soundcloud":
+        tracks = source.drop_previews(tracks)
+    return next((track for track in tracks if not _same_track(track, song.track)), None)
+
+
 def _split_title(title: str) -> tuple[str, str] | None:
     if " - " not in title:
         return None
@@ -154,7 +213,6 @@ def _lastfm_key(text: str) -> str | None:
     if len(cleaned) < 16 or len(cleaned) > 64 or not cleaned.isalnum():
         return None
     return cleaned
-
 
 class _Lastfm(discord.ui.Modal):
     """The key radio needs. Saving it turns radio on."""

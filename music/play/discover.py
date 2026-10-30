@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from contextlib import asynccontextmanager
 
@@ -11,6 +12,7 @@ import discord
 
 from announce import ACCENT_COLOR
 from music.archive import list_playlists
+from music.lavalink import find_songs
 from music.panel import (
     MARK_ANY,
     PANEL_SECONDS,
@@ -24,8 +26,11 @@ from music.panel import (
     _note,
     _row,
     _selected,
+    queue_is_full,
 )
-from music.playback import leave_if_idle, playing_note, warm_voice
+from music.playback import (
+    paused_away, leave_if_idle, now_playing, play_saved, playing_note, queue_tracks, warm_voice,
+)
 from music.source import GENRES, RADIOS, normalize_platform, station_videos
 
 log = logging.getLogger(__name__)
@@ -46,11 +51,6 @@ _GENRE_ROWS = (
     ("Pop", "Jazz", "Rock", "R&B"),
     ("Lo-fi", "Classical", "Hip hop", "Electronic", "Ambient"),
 )
-
-
-def _pkg():
-    import sys
-    return sys.modules["music.play"]
 
 
 class _Pick(discord.ui.Button):
@@ -112,7 +112,7 @@ def _list_options(lists: list) -> list[discord.SelectOption]:
 
 def _keep_trying(line: str) -> bool:
     """Another video might play. A queue, a full line, or a room error applies to all of them."""
-    if playing_note(line) or line.endswith("The queue is full."):
+    if playing_note(line) or queue_is_full(line):
         return False
     if "voice channel" in line or line.startswith("Use this command"):
         return False
@@ -126,7 +126,7 @@ async def _queue(
     **extra,
 ) -> str:
     try:
-        return await _pkg().queue_tracks(
+        return await queue_tracks(
             interaction.user, interaction.guild, tracks, platform, **extra,
         )
     except Exception:
@@ -134,19 +134,47 @@ async def _queue(
         return "Something went wrong while starting the song."
 
 
+def _in_room(interaction: discord.Interaction) -> str | None:
+    """The voice error, before a genre list is opened. None means the room is fine."""
+    from music.playback.start import _room
+
+    room = _room(interaction.user, interaction.guild)
+    if isinstance(room, str):
+        return room
+    return None
+
+
 async def _play_or_note(
     interaction: discord.Interaction,
     tracks: list,
     platform: str,
     on_started: Started,
+    preview: Started | None = None,
     **extra,
 ) -> None:
+    from music.player.card import settle, stage
+
+    state = now_playing(interaction.guild)
+    early = None
+    if preview is not None and tracks and (state is None or not state.has_track):
+        stage(interaction.guild, tracks[0])
+        early = asyncio.create_task(preview(interaction), name="music-player-soon")
     line = await _queue(interaction, tracks, platform, **extra)
-    # Joining the queue leaves this card up. Starting playback opens the player.
-    if not playing_note(line) or line.startswith("Added "):
+    kept = False
+    if early is not None:
+        try:
+            await early
+        except Exception:
+            log.warning("music player could not open early", exc_info=True)
+        kept = await settle(interaction.guild)
+    # Joining the queue leaves this card up. Starting playback names the song
+    # and opens the player. The name stays even when the player was dismissed.
+    if playing_note(line) and not line.startswith("Added "):
         await _note(interaction, line)
+        if not kept:
+            await on_started(interaction)
         return
-    await on_started(interaction)
+    await _note(interaction, line)
 
 
 class GenreList(_SearchCard):
@@ -217,17 +245,25 @@ class GenreList(_SearchCard):
             nonlocal cold
             if getattr(interaction.guild, "voice_client", None) is not None:
                 return
+            # A paused song is still current. Joining would sit there in silence.
+            if paused_away(interaction.guild):
+                return
             cold = True
             warm_voice(interaction.user, interaction.guild)
 
         try:
             yield arm
         finally:
-            self._working = False
-            if not self.is_finished():
-                self.timeout = EMPTY_SECONDS
-            if cold:
-                asyncio.create_task(leave_if_idle(interaction.guild), name="music-idle")
+            task = asyncio.current_task()
+            token = None if task is None else self._task_token.get(task)
+            live = token is not None and self._press.live(token)
+            self._end_press()
+            # An older start does not close a voice join the newer one is still using.
+            if live:
+                if not self.is_finished():
+                    self.timeout = EMPTY_SECONDS
+                if cold:
+                    asyncio.create_task(leave_if_idle(interaction.guild), name="music-idle")
 
     def _chosen_list(self, name: str | None):
         key = (name or "").casefold()
@@ -268,8 +304,15 @@ class GenreList(_SearchCard):
                 self.lists.placeholder = "Starting…"
                 self.lists.disabled = True
                 await self._restore(interaction)
+                preview = getattr(self, "on_preview", None)
+                early = None
+                if preview is not None:
+                    from music.player.card import settle, stage
+
+                    stage(interaction.guild, saved.songs[0])
+                    early = asyncio.create_task(preview(interaction), name="music-player-soon")
                 try:
-                    line = await _pkg().play_saved(
+                    line = await play_saved(
                         interaction.user,
                         interaction.guild,
                         list(saved.songs),
@@ -278,12 +321,22 @@ class GenreList(_SearchCard):
                 except Exception:
                     log.exception("music playlist failed")
                     line = "Something went wrong while starting the song."
+                kept = False
+                if early is not None:
+                    try:
+                        await early
+                    except Exception:
+                        log.warning("music player could not open early", exc_info=True)
+                    from music.player.card import settle
+
+                    kept = await settle(interaction.guild)
                 if not playing_note(line):
                     await _note(interaction, line)
                     return
                 if " Skipped " in line:
                     await _note(interaction, line)
-                await self.on_started(interaction)
+                if not kept:
+                    await self.on_started(interaction)
             finally:
                 self.lists.placeholder = "Pick a playlist"
                 self.lists.disabled = not bool(_saved_lists(self.guild, self.store))
@@ -318,32 +371,64 @@ class GenreList(_SearchCard):
         key: str,
         links: tuple[str, ...],
     ) -> str | None:
-        """Play one video from the station. None means the player opened."""
-        start = _pkg().random.randrange(len(links))
-        for step in range(len(links)):
-            index = (start + step) % len(links)
-            track = await self._video(interaction, links[index])
-            if track is None:
-                continue
-            line = await _queue(
-                interaction,
-                [track],
-                "youtube",
-                videos=links,
-                video_at=index,
-                station=key,
-            )
-            if line.startswith("Playing "):
-                await self.on_started(interaction)
-                return None
-            if _keep_trying(line):
-                continue
-            return line
+        """Play one video from the station. None means the player opened.
+
+        The next video is looked up while this one is still starting, so a miss
+        can swap to it instead of beginning the search then.
+        """
+        start = random.randrange(len(links))
+        order = [(start + step) % len(links) for step in range(len(links))]
+        pending = asyncio.create_task(self._video(interaction, links[order[0]]))
+        try:
+            for step, index in enumerate(order):
+                track = await pending
+                if step + 1 < len(order):
+                    pending = asyncio.create_task(
+                        self._video(interaction, links[order[step + 1]]),
+                    )
+                else:
+                    pending = None
+                if track is None:
+                    continue
+                from music.player.card import settle, stage
+
+                state = now_playing(interaction.guild)
+                preview = getattr(self, "on_preview", None)
+                early = None
+                if preview is not None and (state is None or not state.has_track):
+                    stage(interaction.guild, track)
+                    early = asyncio.create_task(preview(interaction), name="music-player-soon")
+                line = await _queue(
+                    interaction,
+                    [track],
+                    "youtube",
+                    videos=links,
+                    video_at=index,
+                    station=key,
+                )
+                kept = False
+                if early is not None:
+                    try:
+                        await early
+                    except Exception:
+                        log.warning("music player could not open early", exc_info=True)
+                    kept = await settle(interaction.guild)
+                if line.startswith("Playing "):
+                    await _note(interaction, line)
+                    if not kept:
+                        await self.on_started(interaction)
+                    return None
+                if _keep_trying(line):
+                    continue
+                return line
+        finally:
+            if pending is not None and not pending.done():
+                pending.cancel()
         return "That station did not start."
 
     async def _video(self, interaction: discord.Interaction, link: str):
         try:
-            found = await _pkg().find_songs(interaction.guild, link, "youtube")
+            found = await find_songs(interaction.guild, link, "youtube")
         except Exception:
             log.exception("music radio failed")
             return None
@@ -357,7 +442,7 @@ class GenreList(_SearchCard):
         if found is not None:
             return found
         try:
-            found = await _pkg().find_songs(guild, url)
+            found = await find_songs(guild, url)
         except Exception:
             log.exception("music genre list failed")
             return "Something went wrong while starting the song."
@@ -368,6 +453,10 @@ class GenreList(_SearchCard):
     async def on_any(self, interaction: discord.Interaction) -> None:
         async with self._session(interaction) as arm:
             if arm is None:
+                return
+            missing = _in_room(interaction)
+            if missing is not None:
+                await _note(interaction, missing)
                 return
             arm()
             self.rows.content = "Picking a song…"
@@ -391,9 +480,10 @@ class GenreList(_SearchCard):
                     return
                 await _play_or_note(
                     interaction,
-                    [_pkg().random.choice(songs)],
+                    [random.choice(songs)],
                     platform,
                     self.on_started,
+                    getattr(self, "on_preview", None),
                 )
             finally:
                 self.rows.content = PICK_SONG
@@ -402,6 +492,10 @@ class GenreList(_SearchCard):
     async def on_genre(self, interaction: discord.Interaction, phrase: str) -> None:
         async with self._session(interaction) as arm:
             if arm is None:
+                return
+            missing = _in_room(interaction)
+            if missing is not None:
+                await _note(interaction, missing)
                 return
             arm()
             self.rows.content = "Picking a song…"
@@ -413,9 +507,10 @@ class GenreList(_SearchCard):
                     return
                 await _play_or_note(
                     interaction,
-                    [_pkg().random.choice(found.tracks)],
+                    [random.choice(found.tracks)],
                     found.platform,
                     self.on_started,
+                    getattr(self, "on_preview", None),
                 )
             finally:
                 self.rows.content = PICK_SONG

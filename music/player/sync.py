@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 from collections.abc import Awaitable, Callable
 
 import discord
 
 from announce import notice_text, respond
-from music.panel import delete_panel
 from music.playback import _stored, now_playing
 from music.playback.remember import _movable, _on_air
+from music.player.rule import (
+    _replace_mode,
+    after_quiet,
+    card_stays,
+    click_answer,
+    hinted_modes,
+    mode_press,
+    spend_mode,
+)
 from music.player.playbar import _bar_key
-from music.player.card import _replace_mode
 
 log = logging.getLogger(__name__)
 
@@ -23,7 +29,7 @@ REFRESH_SECONDS = 5
 
 
 class _Refresh:
-    """Buttons, the tick, and a new message when the song changes."""
+    """Buttons and the tick keep the open card on the song."""
 
     def _modes(self) -> tuple[bool, bool]:
         """Repeat and shuffle on the line. A quiet player still has them."""
@@ -53,46 +59,61 @@ class _Refresh:
 
     def _apply_mode_hint(self, hint: tuple[str, object]) -> None:
         repeating, shuffling = self._modes()
+        line = _stored(self.guild)
+        radio = bool(line is not None and line.radio)
         kind, value = hint
-        if kind == "repeat" and isinstance(value, bool):
-            repeating = value
-            if value:
-                shuffling = False
-        elif kind == "shuffle" and isinstance(value, bool):
-            shuffling = value
-            if value:
-                repeating = False
+        if kind in ("repeat", "shuffle") and isinstance(value, bool):
+            repeating, shuffling, _radio = hinted_modes(repeating, shuffling, radio, kind, value)
         self._show_mode(repeating, shuffling)
 
+    def _shown_modes(self) -> tuple[bool, bool, bool, bool]:
+        """Pause, repeat, shuffle, and radio, including a press Lavalink has not answered."""
+        state = now_playing(self.guild)
+        repeating, shuffling = self._modes()
+        line = _stored(self.guild)
+        radio = state.radio if state is not None else bool(line is not None and line.radio)
+        paused = bool(state is not None and state.paused)
+        hint = self._hint
+        if hint is not None:
+            kind, value = hint
+            if kind == "pause" and isinstance(value, bool):
+                paused = value
+            elif kind in ("repeat", "shuffle", "radio") and isinstance(value, bool):
+                repeating, shuffling, radio = hinted_modes(
+                    repeating, shuffling, radio, kind, value,
+                )
+        return paused, repeating, shuffling, radio
+
     def _preview(self, kind: str) -> tuple[str, object] | None:
-        """The control's next frame, so the card can move before Lavalink answers."""
+        """The control's next frame, so the card can move before Lavalink answers.
+
+        A second press reads the frame already on the card. The line may still
+        be on the press before this one.
+        """
         state = now_playing(self.guild)
         line = _stored(self.guild)
-        repeating, shuffling = self._modes()
-        radio = state.radio if state is not None else bool(line is not None and line.radio)
-        live = state is not None and state.has_track
+        paused, repeating, shuffling, radio = self._shown_modes()
+        live = (state is not None and state.has_track) or getattr(self, "_coming", None) is not None
         if kind == "pause":
-            if not live or state is None:
+            if not live or state is None or not state.has_track:
                 return None
-            return ("pause", not state.paused)
-        if kind == "repeat":
-            stuck = live and state is not None and (state.stream or state.length <= 0)
-            track = None if line is None or line.current is None else line.current.track
-            if not live and track is not None and (_on_air(line, track) or not _movable(track)):
-                stuck = True
-            # Turning repeat off is still allowed. The stream only blocks turning it on.
-            if stuck and not repeating:
+            return ("pause", not paused)
+        if kind == "next":
+            # Radio plays a similar song. The waiting line is not that title.
+            if radio and not repeating:
                 return None
-            return ("repeat", not repeating)
-        if kind == "shuffle":
-            if radio:
+            if line is None:
                 return None
-            return ("shuffle", not shuffling)
-        if kind == "radio":
-            if not live or state is None:
+            slot = self._wish.slot()
+            if slot >= len(line.later):
+                self._wish.rewind()
                 return None
-            return ("radio", not state.radio)
-        return None
+            return ("next", line.later[slot])
+        stuck = live and state is not None and (state.stream or state.length <= 0)
+        track = None if line is None or line.current is None else line.current.track
+        if not live and track is not None and (_on_air(line, track) or not _movable(track)):
+            stuck = True
+        return mode_press(kind, repeating, shuffling, radio, live=live, stuck=stuck)
 
     async def _act(
         self,
@@ -108,41 +129,85 @@ class _Refresh:
         # seconds, so a busy card is accepted before it waits for that edit.
         # A free card edits the message instead. That edit is the acceptance,
         # and deferring first would throw it away: the response is already done.
-        hint = None if kind is None else self._preview(kind)
-        pending = asyncio.create_task(call())
-        if self._lock.locked() and not interaction.response.is_done():
+        # The lock covers that edit. A pause, skip, or back runs with it, so
+        # Lavalink is told while Discord is still drawing the card. The card
+        # catches up before the lock lets the line refresh in.
+        busy = self._lock.locked() and not interaction.response.is_done()
+        if click_answer("control", busy=busy) == "defer":
             await interaction.response.defer()
         async with self._lock:
+            token = self._wish.claim()
+            hint = None if kind is None else self._preview(kind)
             shown = False
+            # Preview first. This does not run until the hold below waits.
+            early = kind in ("pause", "next", "previous")
+            running = asyncio.create_task(call()) if early else None
             # A quiet player keeps the song on screen. Only the mode line moves.
             quiet = self._current() is None and self._song is not None
+            answering: asyncio.Task[None] | None = None
+            pushed = False
             if hint is not None and not interaction.response.is_done():
                 self._hint = hint
                 if quiet and kind in ("repeat", "shuffle"):
                     self._apply_mode_hint(hint)
                 else:
-                    self.paint()
-                try:
-                    await self._push(interaction)
-                    shown = True
-                except discord.HTTPException:
-                    log.warning("music player could not show the control", exc_info=True)
-                    if not quiet:
-                        self.paint()
-            if not shown:
-                await self._ack(interaction)
+                    # The progress picture stays. A button edit does not spend a new frame.
+                    self.paint(move_bar=False)
+                if early:
+                    answering = asyncio.create_task(self._push(interaction))
+                    pushed = True
+                else:
+                    try:
+                        await self._push(interaction)
+                        shown = True
+                    except discord.HTTPException:
+                        log.warning("music player could not show the control", exc_info=True)
+                        if not quiet:
+                            self.paint(move_bar=False)
+            if answering is None and not shown:
+                if early:
+                    answering = asyncio.create_task(self._ack(interaction))
+                else:
+                    await self._ack(interaction)
             try:
-                note = await pending
+                note = await running if running is not None else await call()
             except Exception:
                 log.exception("music control failed")
                 note = "Something went wrong while using the player."
+            if answering is not None:
+                try:
+                    await answering
+                except discord.HTTPException:
+                    if not pushed:
+                        raise
+                    log.warning("music player could not show the control", exc_info=True)
+                    if not quiet:
+                        self.paint(move_bar=False)
+                else:
+                    if pushed:
+                        shown = True
+            if not self._wish.owns(token):
+                return
             self._hint = None
+            self._wish.rest()
             if note:
                 await respond(interaction, notice_text(note), ephemeral=True)
             if self._closed:
                 return
+            # The bot can be back before this card's guild object can see it.
+            if self._current() is None and getattr(self.guild, "voice_client", None) is None:
+                self._adopt_guild()
             if self._current() is None:
-                if kind in ("repeat", "shuffle") and not note and self._song is not None:
+                # Play just brought the song back. Closing here kills the button.
+                if kind == "pause" and not note:
+                    return
+                step = after_quiet(
+                    kind,
+                    failed=bool(note),
+                    showing=self._song is not None,
+                    holding=self._holding(),
+                )
+                if step == "stay" and kind in ("repeat", "shuffle") and not note and self._song is not None:
                     # The refresh that follows this press must not take the card down.
                     self._mode_press = True
                     self._show_mode(*self._modes())
@@ -151,30 +216,34 @@ class _Refresh:
                     except discord.HTTPException:
                         log.exception("music player could not update")
                     return
-                if not self._holding():
+                if step == "restore" and self._shown is not None:
+                    self._show_mode(*self._modes())
+                    try:
+                        await self._push(interaction)
+                    except discord.HTTPException:
+                        log.exception("music player could not update")
+                    return
+                if step == "dismiss":
+                    # The message still has the song. Show the empty player, then take it down.
+                    self._song = None
+                    self.paint()
+                    try:
+                        await self._push(interaction)
+                    except discord.HTTPException:
+                        log.warning("music player could not show the end", exc_info=True)
                     await self.dismiss()
                 return
             state = self._current()
             key = None if state is None else _bar_key(state)
-            # A different song is its own message, with its own picture.
-            switched = (
-                state is not None
-                and key is not None
-                and self._song is not None
-                and key != self._song
-                and not state.repeating
-            )
+            # A different song stays on this message. The picture opens on the frame already up.
+            song_moved = key is not None and self._song is not None and key != self._song
+            # Skip, back, and a typed seek need a new frame. A mode button leaves the one up.
+            move_bar = kind in ("next", "previous", "seek") or song_moved
             self._mode_press = False
-            if switched:
-                self._song = key
-                if not interaction.response.is_done():
-                    await self._ack(interaction)
-                if await self._renew():
-                    return
-            elif key is not None:
+            if key is not None:
                 self._song = key
             try:
-                if self.paint():
+                if self.paint(move_bar=move_bar):
                     await self._push(interaction)
                 elif not shown:
                     await self._ack(interaction)
@@ -183,30 +252,22 @@ class _Refresh:
                 if not interaction.response.is_done():
                     await interaction.response.defer()
 
-    async def _renew(self) -> bool:
-        """Post this card again, then remove the previous message."""
-        message = self.message
-        send = getattr(getattr(message, "channel", None), "send", None)
-        if not inspect.iscoroutinefunction(send):
+    async def land(self) -> bool:
+        """The preview has had its chance. True when a song is on and the card stayed."""
+        async with self._lock:
+            self._coming = None
+            if self._current() is None:
+                away = True
+            else:
+                away = False
+                if self.paint():
+                    try:
+                        await self._push(None)
+                    except discord.HTTPException:
+                        log.warning("music player could not show the song", exc_info=True)
+        if away:
+            await self.dismiss()
             return False
-        # The new message needs its own picture. The old file stays on the old message.
-        self._bars.bar = None
-        self.paint()
-        upload = self.take_bar()
-        extra = {"file": upload} if upload is not None else {}
-        try:
-            sent = await send(
-                view=self,
-                allowed_mentions=discord.AllowedMentions.none(),
-                **extra,
-            )
-        except discord.HTTPException:
-            log.warning("music player could not post the next song", exc_info=True)
-            self._bars.bar = None
-            return False
-        self.message = sent
-        await self._cite(sent)
-        await delete_panel(message)
         return True
 
     async def redraw(self, interaction: discord.Interaction | None = None) -> None:
@@ -216,8 +277,9 @@ class _Refresh:
             state = self._current()
             if state is None:
                 pressed = self._mode_press
+                stay, self._mode_spare = spend_mode(pressed, self._mode_spare)
                 self._mode_press = False
-                if self._holding() or pressed:
+                if card_stays(self._holding(), stay):
                     if pressed and self._song is not None:
                         self._show_mode(*self._modes())
                     if pressed:
@@ -235,19 +297,7 @@ class _Refresh:
                     await self._ack(interaction)
                 await self.dismiss()
                 return
-            key = _bar_key(state)
-            # A new message is how the channel learns a different song started,
-            # and it is the card they can change right then. Repeat is that
-            # same song, so the message already on screen stays.
-            notify = (
-                interaction is None
-                and self._song is not None
-                and key != self._song
-                and not state.repeating
-            )
-            self._song = key
-            if notify and await self._renew():
-                return
+            self._song = _bar_key(state)
             if self.paint():
                 await self._push(interaction)
                 return
@@ -265,16 +315,19 @@ class _Refresh:
                 await asyncio.sleep(REFRESH_SECONDS)
                 if self._closed:
                     return
+                self._adopt_guild()
                 if self._left():
                     await self.dismiss()
                     return
                 if self._current() is None:
-                    pressed = self._mode_press
-                    self._mode_press = False
-                    if self._holding() or pressed:
-                        continue
-                    await self.dismiss()
-                    return
+                    async with self._lock:
+                        if self._current() is None:
+                            stay, self._mode_spare = spend_mode(self._mode_press, self._mode_spare)
+                            self._mode_press = False
+                            if card_stays(self._holding(), stay):
+                                continue
+                            await self.dismiss()
+                            return
                 try:
                     await self.redraw()
                 except discord.NotFound:

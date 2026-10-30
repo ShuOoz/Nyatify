@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
-import inspect
-import io
-import logging
+import asyncio, inspect, io, logging
 from collections.abc import Awaitable, Callable
 
 import discord
@@ -14,709 +11,439 @@ from discord.components import MediaGalleryItem
 from announce import ACCENT_COLOR, notice_text, respond
 from music import source
 from music.panel import (
-    MARK_ANY,
-    MARK_BACK,
-    MARK_CLOSE,
-    MARK_NEXT,
-    MARK_SAVE,
-    RADIO_MARK,
-    _HALF,
-    _LINE,
-    _clip,
-    _half,
-    delete_panel,
-    format_clock,
-    meta_line,
-    song_label,
-    song_line,
+    MARK_ANY, MARK_BACK, MARK_CLOSE, MARK_NEXT, MARK_SAVE, RADIO_MARK, _HALF, _LINE,
+    _clip, _half, _row, delete_panel, format_clock, meta_line, song_label, song_line,
 )
 from music.playback import (
-    _stored,
-    member_in_voice,
-    next_track,
-    now_playing,
-    previous_track,
-    queued,
-    repeat_track,
-    shuffle_queue,
-    stop_track,
-    toggle_pause,
-    tune_track,
-    unwatch_line,
-    watch_line,
+    PlayState, _stored, leave_track, member_in_voice, next_track, now_playing,
+    previous_track, queued, repeat_track, shuffle_queue, toggle_pause,
+    apply_playback, unwatch_line, watch_line,
 )
 from music.player.album import _Album, _AlbumCard, _playlists, _record_id
+from music.player.rule import _mode, hinted_modes
 from music.player.playbar import _BarClock, _bar_key
 from music.player.radio import _Radio
 
 log = logging.getLogger(__name__)
 
 TITLE = "## Osaka Player"
-VOLUME_MARK = "𖦤"
-SHUFFLE_MARK = "֎"
-REPEAT_MARK = "𖣠"
-# A filled square while the song plays. U+FE0E keeps it a plain mark, not an emoji picture.
-# ► while it is paused. It has no emoji picture, and beside the fillers it is 0.990 em
-# against the square's 1.000 em.
-PAUSE_MARK = "\u25fc\ufe0e"
-PLAY_MARK = "\u25ba"
-INFO_MARK = "ᝰ"
-# The pointers and close are the shared panel marks, so the player matches the other cards.
-PREVIOUS_MARK = MARK_BACK
-NEXT_MARK = MARK_NEXT
-CLOSE_MARK = MARK_CLOSE
-
-
-# Two halfwidth fillers on each side, the same count, so the mark stays in
-# the middle. A thin space is 0.139 em here and about 0.39 em on Windows,
-# which wrapped each row of five. The phone drops the fillers and was keeping
-# only the left thin spaces, so those marks leaned right. One more filler is
-# 1.0 em and the Windows row wraps again, so the buttons differ by the marks
-# alone. The upper row is 14.452 em and the lower row is 14.423 em.
-def _fit(mark: str, *, hair: int = 0) -> str:
-    side = _HALF * 2
-    gap = _HAIR * hair
-    return f"{side}{gap}{mark}{gap}{side}"
-
-
-# Beside the same fillers the marks are 4.601 em in the upper row and 4.423 em in
-# the lower row, so the lower row ran 0.178 em short. A hair space is 0.070 em on the
-# Mac, and one on each side of close adds 0.140 em, which leaves 0.038 em.
+VOLUME_MARK, SHUFFLE_MARK, REPEAT_MARK = "𖦤", "֎", "𖣠"
+# ► is 0.990 em beside the fillers; the square is 1.000 em. U+FE0E keeps the square a mark.
+PAUSE_MARK, PLAY_MARK, INFO_MARK = "\u25fc\ufe0e", "\u25ba", "ᝰ"
+# The lower row is 0.178 em short. A hair space is 0.070 em, one on each side of close.
 _HAIR = "\u200a"
-
-
-def _mode(repeating: bool, shuffling: bool) -> str:
-    """Repeat, shuffle, or the queue's own order. Radio is only the button."""
-    if repeating:
-        return "On Repeat"
-    if shuffling:
-        return "On Shuffle"
-    return "On Queue"
-
-
-_MODE_LINES = ("-# On Queue", "-# On Repeat", "-# On Shuffle")
-
-
-def _replace_mode(text: str, repeating: bool, shuffling: bool) -> str:
-    """Swap the mode line. The song around it stays."""
-    fresh = f"-# {_mode(repeating, shuffling)}"
-    lines = text.split("\n")
-    for index, line in enumerate(lines):
-        if line in _MODE_LINES:
-            lines[index] = fresh
-            return "\n".join(lines)
-    return text
-
-
-def _status(state: PlayState, *, repeating: bool, shuffling: bool) -> str:
-    """Grey lines under the artist. The mode line is the one directly above Up next."""
-    lines = [f"-# {_mode(repeating, shuffling)}"]
-    if state.stream:
-        lines.append(RADIO_MARK)
-    lines.append(_next_line(state.upcoming or "Nothing"))
-    return "\n".join(lines)
-
-
-def _cover_text(song: str, status: str) -> str:
-    """Lines beside the cover. The title is a heading, so the gap sits under it.
-
-    The artist is on the line above On Repeat.
-    """
-    if song and status:
-        return f"{song}\n{status}"
-    return song or status
-
-
+_QUIET = discord.AllowedMentions.none()
+_OFF = discord.ButtonStyle.secondary
+# Refresh writes these slots: 2 status, 7 repeat style, 9 shuffle style.
+def _words(value: object, fallback: str) -> str:
+    cleaned = " ".join(value.split()) if isinstance(value, str) else ""
+    return cleaned or fallback
+def _http(value: object) -> str | None:
+    return value if isinstance(value, str) and value.startswith(("http://", "https://")) else None
+def _fit(mark: str, *, hair: int = 0) -> str:
+    # Two halfwidth fillers each side. Thin spaces wrap on Windows and lean on a phone.
+    side, gap = _HALF * 2, _HAIR * hair
+    return f"{side}{gap}{mark}{gap}{side}"
+def _lit(on: bool) -> discord.ButtonStyle:
+    return discord.ButtonStyle.primary if on else _OFF
 def _next_line(upcoming: str) -> str:
-    """Up next stays on one line. Wide characters take more of it than narrow ones."""
     prefix = "Up next: "
-    name = _clip(" ".join(upcoming.split()), _LINE - sum(_half(char) for char in prefix))
+    name = _clip(_words(upcoming, ""), _LINE - sum(_half(char) for char in prefix))
     return f"-# {prefix}{name}"
-
-
+def _status(state: PlayState, *, repeating: bool, shuffling: bool, radio_on: bool = False) -> str:
+    mark = f"\n{RADIO_MARK}" if state.stream else ""
+    # Radio plays a similar song and leaves the queue where it is. Repeat still names it.
+    upcoming = "A similar song" if radio_on and not repeating else (state.upcoming or "Nothing")
+    return f"-# {_mode(repeating, shuffling)}{mark}\n" + _next_line(upcoming)
+def _details(track: object, title: str = "…", author: str = "", uri: str | None = None, artwork: str | None = None):
+    return (
+        _words(getattr(track, "title", None), title),
+        _words(getattr(track, "author", None), author),
+        _http(getattr(track, "uri", None)) or _http(getattr(track, "url", None)) or uri,
+        _http(getattr(track, "artwork", None)) or artwork,
+    )
 def _hosted(message: object, name: str) -> str | None:
-    """The link Discord stored for this upload."""
     found = getattr(message, "attachments", None)
     if not isinstance(found, (list, tuple)):
         return None
     for item in found:
-        if getattr(item, "filename", None) != name:
-            continue
-        url = getattr(item, "url", None)
-        if isinstance(url, str) and url.startswith(("http://", "https://")):
+        if getattr(item, "filename", None) == name and (url := _http(getattr(item, "url", None))):
             return url
     return None
-
-
 def _typed_level(text: str) -> int | None:
-    cleaned = " ".join(text.split())
-    if not cleaned.isdecimal():
-        return None
-    level = int(cleaned)
-    if level > 100:
-        return None
-    return level
-
-
+    cleaned = _words(text, "")
+    level = int(cleaned) if cleaned.isdecimal() else None
+    return level if level is not None and level <= 100 else None
 def _typed_clock(text: str) -> int | None:
-    """Milliseconds from 1:30 or 1:02:03. None when the text is not a time."""
     parts = text.split(":")
-    if not parts or len(parts) > 3 or any(not part.isdecimal() for part in parts):
+    if not 1 <= len(parts) <= 3 or any(not part.isdecimal() for part in parts):
         return None
     numbers = [int(part) for part in parts]
     if any(part >= 60 for part in numbers[1:]):
         return None
-    if len(numbers) == 1:
-        total = numbers[0]
-    elif len(numbers) == 2:
-        total = numbers[0] * 60 + numbers[1]
-    else:
-        total = numbers[0] * 3600 + numbers[1] * 60 + numbers[2]
-    return total * 1000
-
-
+    units = (3600, 60, 1)[-len(numbers):]
+    return 1000 * sum(number * unit for number, unit in zip(numbers, units))
 def _menu_value(menu: discord.ui.Select, fallback: str) -> str:
-    values = menu.values
-    if values and isinstance(values[0], str) and values[0]:
-        return source.normalize_platform(values[0])
+    picked = menu.values[0] if menu.values else None
+    if isinstance(picked, str) and picked:
+        return source.normalize_platform(picked)
     for option in menu.options:
         if option.default and isinstance(option.value, str):
             return source.normalize_platform(option.value)
     return fallback
-
-
-def _playing_platform(guild: object) -> str:
-    rows = queued(guild) or []
-    current = next((row for row in rows if row.playing), None)
-    site = None if current is None else current.platform
-    return source.normalize_platform(site)
+def _current_row(guild: object):
+    return next((row for row in queued(guild) or [] if row.playing), None)
+def _field(text: str, placeholder: str, limit: int, **extra) -> discord.ui.Label:
+    return discord.ui.Label(
+        text=text, component=discord.ui.TextInput(placeholder=placeholder, max_length=limit, **extra),
+    )
+def _face(
+    heading, song, status, *, pause=_OFF, pause_off=True, repeat_off=True, repeat=_OFF,
+    controls_off=True, shuffle=_OFF, radio=_OFF, shuffle_off=True,
+) -> tuple:
+    return (
+        heading, song, status, "", pause, pause_off, repeat_off, repeat,
+        controls_off, shuffle, radio, shuffle_off,
+    )
 
 
 class _Volume(discord.ui.Modal):
-    """Volume and the site start filled in. Duration stays empty until a time is typed."""
-
-    def __init__(
-        self,
-        apply: Callable[
-            [discord.Interaction, int, str | None, int | None],
-            Awaitable[None],
-        ],
-        *,
-        level: int,
-        platform: str,
-        length: int,
-    ) -> None:
+    def __init__(self, apply: Callable[..., Awaitable[None]], *, level: int, platform: str, length: int) -> None:
         super().__init__(title="Tune")
         self._apply = apply
         self._platform = source.normalize_platform(platform)
-        self.level = discord.ui.Label(
-            text="Volume",
-            component=discord.ui.TextInput(
-                placeholder="From 0 to 100",
-                max_length=3,
-                default=str(level),
-            ),
-        )
+        self.level = _field("Volume", "From 0 to 100", 3, default=str(level))
+        clock = f"Up to {format_clock(length)}" if length > 0 else "Live"
+        self.place = _field("Duration", clock, 8, required=False)
         self.sites = discord.ui.Select(
             custom_id="music-now-platform",
             placeholder=source.platform_label("", self._platform),
-            min_values=1,
-            max_values=1,
+            min_values=1, max_values=1,
             options=[
                 discord.SelectOption(label=label, value=key, default=key == self._platform)
                 for key, label in source.platform_pairs()
             ],
         )
-        self.place = discord.ui.Label(
-            text="Duration",
-            component=discord.ui.TextInput(
-                placeholder=f"Up to {format_clock(length)}" if length > 0 else "Live",
-                max_length=8,
-                required=False,
-            ),
-        )
-        self.add_item(self.level)
-        self.add_item(self.place)
-        self.add_item(discord.ui.Label(text="Platform", component=self.sites))
-
+        for item in (self.level, self.place, discord.ui.Label(text="Platform", component=self.sites)):
+            self.add_item(item)
     async def on_submit(self, interaction: discord.Interaction) -> None:
         level = _typed_level(str(self.level.component))
-        if level is None:
-            await respond(interaction, notice_text("Type a volume from 0 to 100."), ephemeral=True)
-            return
-        typed = " ".join(str(self.place.component).split())
-        position = None if not typed else _typed_clock(typed)
-        if typed and position is None:
-            await respond(interaction, notice_text("Type a time like 1:30."), ephemeral=True)
+        typed = _words(str(self.place.component), "")
+        position = _typed_clock(typed) if typed else None
+        if level is None or (typed and position is None):
+            text = "Type a volume from 0 to 100." if level is None else "Type a time like 1:30."
+            await respond(interaction, notice_text(text), ephemeral=True)
             return
         chosen = _menu_value(self.sites, self._platform)
-        platform = None if chosen == self._platform else chosen
-        await self._apply(interaction, level, platform, position)
+        await self._apply(interaction, level, None if chosen == self._platform else chosen, position)
 
 
 class _Control(discord.ui.Button):
-    def __init__(self, custom_id: str, method: str, *, label: str) -> None:
-        super().__init__(label=label, style=discord.ButtonStyle.secondary, custom_id=custom_id)
-        self.method = method
-
+    def __init__(self, name: str, *, label: str) -> None:
+        super().__init__(label=label, style=_OFF, custom_id=f"music-{name}")
+        self.method = f"on_{name}"
     async def callback(self, interaction: discord.Interaction) -> None:
         panel = self.view
         if isinstance(panel, MusicPlayer):
             await getattr(panel, self.method)(interaction)
 
+_staged: dict[int, object] = {}
+_cards: dict[int, object] = {}
+
+
+class Wish:
+    def __init__(self) -> None:
+        self.token = self.ahead = 0
+    def claim(self) -> int:
+        self.token += 1
+        return self.token
+    def owns(self, token: int) -> bool:
+        return token == self.token
+    def slot(self) -> int:
+        slot = self.ahead
+        self.ahead += 1
+        return slot
+    def rewind(self) -> None:
+        if self.ahead:
+            self.ahead -= 1
+    def rest(self) -> None:
+        self.ahead = 0
+def _guild_id(guild: object | None) -> int | None:
+    guild_id = getattr(guild, "id", None)
+    return guild_id if isinstance(guild_id, int) and not isinstance(guild_id, bool) else None
+def _put(table: dict[int, object], guild: object | None, value: object) -> None:
+    if (guild_id := _guild_id(guild)) is not None:
+        table[guild_id] = value
+def _read(table: dict[int, object], guild: object | None) -> object | None:
+    guild_id = _guild_id(guild)
+    return None if guild_id is None else table.get(guild_id)
+def _drop(table: dict[int, object], guild: object | None) -> None:
+    if (guild_id := _guild_id(guild)) is not None:
+        table.pop(guild_id, None)
+def preview_state(track: object) -> PlayState:
+    length = getattr(track, "length", None)
+    if isinstance(length, bool) or not isinstance(length, int) or length < 0:
+        length = 0
+    title, author, uri, artwork = _details(track)
+    return PlayState(title, author, uri, artwork, 0, length, False, None, None, 100, None, True, False)
+def stage(guild: object | None, track: object) -> None:
+    _put(_staged, guild, track)
+def staged(guild: object | None) -> object | None:
+    return _read(_staged, guild)
+def clear_stage(guild: object | None) -> None:
+    _drop(_staged, guild)
+def remember(panel: object) -> None:
+    _put(_cards, getattr(panel, "guild", None), panel)
+def forget(panel: object) -> None:
+    guild = getattr(panel, "guild", None)
+    if _read(_cards, guild) is panel:
+        _drop(_cards, guild)
+async def settle(guild: object | None) -> bool:
+    clear_stage(guild)
+    panel = _read(_cards, guild)
+    if panel is None or getattr(panel, "_closed", True):
+        return False
+    return await panel.land()
 
 from music.player.sync import _Refresh
 
 
 class MusicPlayer(_Album, _Radio, _Refresh, discord.ui.LayoutView):
-    """The Osaka Player heading, the song beside the art, then the controls.
-
-    The power button on the heading leaves the voice channel.
-    A moving picture of the song sits between the song and the buttons.
-    """
-
     def __init__(
-        self,
-        guild: object,
-        *,
+        self, guild: object, *,
         discard: Callable[[MusicPlayer], None] | None = None,
         conceal: Callable[[MusicPlayer], None] | None = None,
         store: object | None = None,
     ) -> None:
         super().__init__(timeout=None)
         self.guild = guild
-        self.message: discord.Message | None = None
-        self._task: asyncio.Task[None] | None = None
+        self.message = self._task = None
         self._closed = False
         # Set once the bot is seen in voice. The tick closes the card after that if the bot is out.
         self._voiced = getattr(guild, "voice_client", None) is not None
-        self._discard = discard
-        # The cross uses this. Leaving voice only removes the card.
-        self._conceal = conceal
-        self._lists = store
-        self._lock = asyncio.Lock()
-        # One album panel per person. The next press removes the one already open.
+        self._discard, self._conceal, self._lists = discard, conceal, store
+        self._lock, self._album_lock = asyncio.Lock(), asyncio.Lock()
         self._albums: dict[int, tuple[object, _AlbumCard]] = {}
-        self._album_lock = asyncio.Lock()
-        self._shown: tuple | None = None
-        self._face: tuple | None = None
-        self._watch = None
-        self._hint: tuple[str, object] | None = None
-        # Repeat or shuffle while the player is quiet. The card stays up for that change.
-        self._mode_press = False
-        self._box: discord.ui.Container | None = None
+        self._shown = self._face = self._watch = self._hint = None
+        self._wish = Wish()
+        self._coming = staged(self.guild)
+        self._cover = self._song = None
+        # A quiet repeat or shuffle. The spare keeps the card for the refresh that follows.
+        self._mode_press = self._mode_spare = False
+        self._box = self._gallery = None
         self._bars = _BarClock()
-        self._gallery: discord.ui.MediaGallery | None = None
-        # The song this card is already showing. A different one posts a new message.
-        self._song: str | None = None
-        self.heading = discord.ui.TextDisplay("**Nothing is playing**")
-        self.song = discord.ui.TextDisplay("…")
-        self.meta = discord.ui.TextDisplay("")
-        self.time = discord.ui.TextDisplay("…")
-        self.previous = _Control("music-previous", "on_previous", label=_fit(PREVIOUS_MARK))
-        self.pause = _Control("music-pause", "on_pause", label=_fit(PAUSE_MARK))
-        self.skip = _Control("music-next", "on_next", label=_fit(NEXT_MARK))
-        self.volume = _Control("music-volume", "on_volume", label=_fit(VOLUME_MARK))
-        self.radio = _Control("music-radio", "on_radio", label=_fit(MARK_ANY))
-        self.save = _Control("music-save", "on_save", label=_fit(MARK_SAVE))
-        self.info = _Control("music-info", "on_info", label=_fit(INFO_MARK))
-        self.shuffle = _Control("music-shuffle", "on_shuffle", label=_fit(SHUFFLE_MARK))
-        self.repeat = _Control("music-repeat", "on_repeat", label=_fit(REPEAT_MARK))
-        self.close = _Control("music-close", "on_close", label=_fit(CLOSE_MARK, hair=1))
-        self.leave = _Control("music-leave", "on_leave", label="⏻")
+        self.heading, self.song, self.meta = map(
+            discord.ui.TextDisplay, ("**Nothing is playing**", "…", ""),
+        )
+        self.previous = _Control("previous", label=_fit(MARK_BACK))
+        self.pause = _Control("pause", label=_fit(PAUSE_MARK))
+        self.next = _Control("next", label=_fit(MARK_NEXT))
+        self.volume = _Control("volume", label=_fit(VOLUME_MARK))
+        self.radio = _Control("radio", label=_fit(MARK_ANY))
+        self.save = _Control("save", label=_fit(MARK_SAVE))
+        self.info = _Control("info", label=_fit(INFO_MARK))
+        self.shuffle = _Control("shuffle", label=_fit(SHUFFLE_MARK))
+        self.repeat = _Control("repeat", label=_fit(REPEAT_MARK))
+        self.close = _Control("close", label=_fit(MARK_CLOSE, hair=1))
+        self.leave = _Control("leave", label="⏻")
+        if self._coming is not None:
+            remember(self)
         self.paint()
         playing = self._current()
         if playing is not None:
             self._song = _bar_key(playing)
-
     def _inside(self, interaction: discord.Interaction) -> bool:
-        """Use this click's guild. A card can still hold the guild from before a reconnect."""
         live = getattr(interaction, "guild", None)
         if isinstance(live, discord.Guild) and live.id == _record_id(self.guild):
             self.guild = live
         return member_in_voice(interaction.user, self.guild)
-
+    async def _require_room(self, interaction: discord.Interaction) -> bool:
+        if self._inside(interaction):
+            return True
+        await respond(interaction, notice_text("Join the voice channel first."), ephemeral=True)
+        return False
+    def _adopt_guild(self) -> None:
+        current = _record_id(self.guild)
+        if current is None:
+            return
+        posted = getattr(self.message, "guild", None) if self.message is not None else None
+        getter = getattr(getattr(self.guild, "_state", None), "get_guild", None)
+        try:
+            found = getter(current) if callable(getter) else None
+        except Exception:
+            found = None
+        cached = found if _record_id(found) == current else None
+        # A room with the bot wins. Otherwise the message's guild comes before the cache.
+        same = lambda guild: _record_id(guild) == current
+        voiced = lambda guild: same(guild) and getattr(guild, "voice_client", None) is not None
+        live = next((guild for guild in (cached, posted) if voiced(guild)), None)
+        live = live or next((guild for guild in (posted, cached) if same(guild)), None)
+        if live is not None:
+            self.guild = live
     def follow(self, message: discord.Message) -> None:
         self.message = message
         if self._watch is None:
             self._watch = self._on_line
             watch_line(self._watch)
         self._task = asyncio.create_task(self._tick(), name="music-player")
-
     def shutdown(self) -> None:
         if self._closed:
             return
         self._closed = True
+        forget(self)
         self.stop()
-        watch = self._watch
-        self._watch = None
+        watch, self._watch = self._watch, None
         if watch is not None:
             unwatch_line(watch)
-        task = self._task
-        self._task = None
+        task, self._task = self._task, None
         if task is not None and task is not asyncio.current_task():
             task.cancel()
-        drop = self._discard
-        self._discard = None
-        self._conceal = None
+        drop, self._discard, self._conceal = self._discard, None, None
         if drop is not None:
             drop(self)
-
     async def on_timeout(self) -> None:
         await self.dismiss()
-
     async def dismiss(self) -> None:
-        """Remove the card. The song keeps playing."""
         message = self.message
         self.shutdown()
         await delete_panel(message)
-
+    def _take_jump(self) -> bool:
+        player = getattr(self.guild, "voice_client", None)
+        if getattr(player, "_jumped", None) is not True:
+            return False
+        player._jumped = False
+        return True
     def take_bar(self) -> discord.File | None:
-        """The picture for the next send. A seek or a pause uploads another."""
         fresh = self._bars.take()
         if fresh is None:
             return None
         name, picture = fresh
         return discord.File(io.BytesIO(picture), filename=name)
-
     async def _cite(self, message: object) -> None:
-        """Point the bar at the link Discord stored for this upload.
-
-        The other client loads that link with the card.
-        """
-        bar = self._bars.bar
-        gallery = self._gallery
-        if bar is None or gallery is None or not gallery.items:
+        bar, gallery = self._bars.bar, self._gallery
+        if bar is None or gallery is None or not gallery.items or not str(gallery.items[0].media.url).startswith("attachment://"):
             return
-        if not str(gallery.items[0].media.url).startswith("attachment://"):
+        link, edit = _hosted(message, bar.name), getattr(message, "edit", None)
+        if link is None or not inspect.iscoroutinefunction(edit):
             return
-        link = _hosted(message, bar.name)
-        if link is None:
-            return
+        previous = list(gallery.items)
         gallery.items = [MediaGalleryItem(link)]
-        edit = getattr(message, "edit", None)
-        if not inspect.iscoroutinefunction(edit):
-            return
         try:
-            await edit(view=self, allowed_mentions=discord.AllowedMentions.none())
+            await edit(view=self, allowed_mentions=_QUIET)
         except discord.HTTPException:
+            gallery.items = previous
             log.warning("music player could not show the bar", exc_info=True)
-
     def _hearing(self) -> bool:
-        player = getattr(self.guild, "voice_client", None)
-        return getattr(player, "current", None) is not None
-
-    def _aim(self) -> None:
-        bar = self._bars.bar
-        gallery = self._gallery
-        if bar is None or gallery is None:
-            return
-        gallery.items = [MediaGalleryItem(f"attachment://{bar.name}")]
-
-    def paint(self) -> bool:
-        state = now_playing(self.guild)
-        shown = self._parts(state)
-        paused = state is not None and state.has_track and shown[4] == discord.ButtonStyle.primary
-        # This paint's upload. A picture from an earlier paint was already sent, or it is replaced below.
-        self._bars.fresh = None
-        # The bar is one frame. An edit leaves that frame where it is.
-        bar_changed = self._bars.sync(
-            state, paused=paused, hearing=self._hearing(),
-        )
-        if shown == self._shown and not bar_changed:
-            return False
-        self._shown = shown
-        self.heading.content = shown[0]
-        self.meta.content = shown[2]
-        self.time.content = shown[3]
-        # Fold the grey lines into the song while the cover is up. The heading
-        # on the title opens the gap under the song name.
-        covered = state is not None and state.has_track and bool(state.artwork)
-        self.song.content = _cover_text(shown[1], shown[2]) if covered else shown[1]
-        # Blurple means paused, and the mark is the triangle. Grey means playing.
-        self.pause.style = shown[4]
-        self.pause.label = _fit(PLAY_MARK if shown[4] == discord.ButtonStyle.primary else PAUSE_MARK)
-        self.pause.disabled = shown[5]
-        self.repeat.disabled = shown[6]
-        self.repeat.style = shown[7]
-        self.shuffle.disabled = shown[11]
-        # Blurple means that mode is on. The two marks stay.
-        self.shuffle.style = shown[9]
-        self.radio.style = shown[10]
-        self.previous.disabled = shown[8]
-        self.skip.disabled = shown[8]
-        self.volume.disabled = shown[8]
-        self.radio.disabled = shown[8]
-        self.save.disabled = shown[8]
-        self.info.disabled = shown[8]
-        # Words and buttons update in place. A new picture, or a line appearing, builds the cover again.
-        shape = (
-            state is not None and state.has_track,
-            None if state is None else state.artwork,
-            bool(self.time.content),
-            bool(self.meta.content),
-            self._bars.bar is not None,
-        )
-        if self._box is None or shape != self._face:
-            self._face = shape
-            self._mount(state)
-        elif bar_changed:
-            self._aim()
-        return True
-
-    def _parts(self, state: PlayState | None) -> tuple:
-        if state is None or not state.has_track:
-            channel = None if state is None else state.channel_id
-            return (
-                "**Nothing is playing**",
-                "",
-                meta_line(None, channel),
-                "",
-                discord.ButtonStyle.secondary,
-                True,
-                True,
-                discord.ButtonStyle.secondary,
-                True,
-                discord.ButtonStyle.secondary,
-                discord.ButtonStyle.secondary,
-                True,
-            )
-        paused = state.paused
-        repeating = state.repeating
-        shuffling = state.shuffling
-        radio = state.radio
-        hint = self._hint
-        if hint is not None:
-            kind, value = hint
-            if kind == "pause" and isinstance(value, bool):
-                paused = value
-            elif kind == "repeat" and isinstance(value, bool):
-                repeating = value
-                if value:
-                    shuffling = False
-            elif kind == "shuffle" and isinstance(value, bool):
-                shuffling = value
-                if value:
-                    repeating = False
-            elif kind == "radio" and isinstance(value, bool):
-                radio = value
-                if value:
-                    shuffling = False
-        line = song_line(state.title, state.author, state.uri)
-        return (
-            "",
-            line,
-            _status(state, repeating=repeating, shuffling=shuffling),
-            "",
-            discord.ButtonStyle.primary if paused else discord.ButtonStyle.secondary,
-            False,
-            # A livestream cannot repeat. Leave the button on when repeat is already
-            # on, so it can be turned off instead of staying stuck.
-            (state.stream or state.length <= 0) and not repeating,
-            discord.ButtonStyle.primary if repeating else discord.ButtonStyle.secondary,
-            False,
-            discord.ButtonStyle.primary if shuffling else discord.ButtonStyle.secondary,
-            discord.ButtonStyle.primary if radio else discord.ButtonStyle.secondary,
-            radio,
-        )
-
-    def _mount(self, state: PlayState | None) -> None:
-        box = self._box
-        if box is not None:
-            self.remove_item(box)
-        box = discord.ui.Container(accent_colour=ACCENT_COLOR)
-        box.add_item(discord.ui.Section(TITLE, accessory=self.leave))
-        box.add_item(discord.ui.Separator())
-        playing = state is not None and state.has_track
-        beside: list[discord.ui.TextDisplay] = []
-        if playing and state.artwork:
-            thumb = discord.ui.Thumbnail(
-                state.artwork,
-                description=song_label(state.title, state.author)[:256],
-            )
-            # One block. The grey lines are already in the song text.
-            beside = [self.song]
-            if self.time.content:
-                beside.append(self.time)
-            box.add_item(discord.ui.Section(*beside, accessory=thumb))
-        elif playing:
-            box.add_item(self.song)
-        else:
-            box.add_item(self.heading)
-        if not beside:
-            if self.time.content:
-                box.add_item(self.time)
-            if self.meta.content:
-                box.add_item(self.meta)
-        # Under the song, above the buttons. The picture meets the end of the lower row.
-        bar = self._bars.bar
-        if bar is not None:
-            gallery = discord.ui.MediaGallery()
-            gallery.add_item(media=f"attachment://{bar.name}")
-            self._gallery = gallery
-            box.add_item(gallery)
-        else:
-            self._gallery = None
-        box.add_item(discord.ui.Separator())
-        box.add_item(self._row(self.shuffle, self.previous, self.pause, self.skip, self.repeat))
-        box.add_item(self._row(self.save, self.info, self.radio, self.volume, self.close))
-        self._box = box
-        self.add_item(box)
-
-    def _row(self, *buttons: discord.ui.Button) -> discord.ui.ActionRow:
-        row = discord.ui.ActionRow()
-        for button in buttons:
-            row.add_item(button)
-        return row
-
-    async def _push(self, interaction: discord.Interaction | None) -> None:
-        mentions = discord.AllowedMentions.none()
+        return getattr(getattr(self.guild, "voice_client", None), "current", None) is not None
+    def _attachments(self) -> dict:
         upload = self.take_bar()
-        extra = {"attachments": [upload]} if upload is not None else {}
+        if upload is not None:
+            return {"attachments": [upload]}
+        # The song is gone. Leave the old progress picture off the card.
+        return {"attachments": []} if self._bars.bar is None else {}
+    async def _push(self, interaction: discord.Interaction | None) -> None:
+        extra = {"view": self, "allowed_mentions": _QUIET, **self._attachments()}
         if interaction is not None and not interaction.response.is_done():
-            result = await interaction.response.edit_message(view=self, allowed_mentions=mentions, **extra)
+            result = await interaction.response.edit_message(**extra)
             await self._cite(getattr(result, "resource", None) or self.message)
             return
-        if self.message is not None:
-            edited = await self.message.edit(view=self, allowed_mentions=mentions, **extra)
-            await self._cite(edited if edited is not None else self.message)
-
+        if self.message is None:
+            return
+        edited = await self.message.edit(**extra)
+        await self._cite(edited if edited is not None else self.message)
+    async def _close_message(self, interaction: discord.Interaction) -> None:
+        try:
+            await interaction.delete_original_response()
+        except discord.HTTPException:
+            log.warning("music player could not close", exc_info=True)
     async def on_previous(self, interaction: discord.Interaction) -> None:
-        await self._act(interaction, lambda: previous_track(self.guild, interaction.user))
-
+        await self._act(interaction, lambda: previous_track(self.guild, interaction.user), "previous")
     async def on_pause(self, interaction: discord.Interaction) -> None:
         await self._act(interaction, lambda: toggle_pause(self.guild, interaction.user), "pause")
-
     async def on_next(self, interaction: discord.Interaction) -> None:
-        await self._act(interaction, lambda: next_track(self.guild, interaction.user))
-
+        await self._act(interaction, lambda: next_track(self.guild, interaction.user), "next")
     async def on_shuffle(self, interaction: discord.Interaction) -> None:
         await self._act(interaction, lambda: shuffle_queue(self.guild), "shuffle")
-
     async def on_repeat(self, interaction: discord.Interaction) -> None:
         await self._act(interaction, lambda: repeat_track(self.guild), "repeat")
-
     async def on_leave(self, interaction: discord.Interaction) -> None:
-        """Leave the voice channel. The card goes with the bot."""
-        if not self._inside(interaction):
-            await respond(interaction, notice_text("Join the voice channel first."), ephemeral=True)
+        if not await self._require_room(interaction):
             return
         # Leave starts before the card answers, so the room does not wait on Discord.
-        leaving = asyncio.create_task(stop_track(self.guild))
+        leaving = asyncio.create_task(leave_track(self.guild))
         await self._ack(interaction)
         try:
             note = await leaving
         except Exception:
             log.exception("music player could not leave")
             await respond(
-                interaction,
-                notice_text("Something went wrong while leaving the voice channel."),
-                ephemeral=True,
+                interaction, notice_text("Something went wrong while leaving the voice channel."), ephemeral=True,
             )
             return
-        if note not in ("Stopped.", "Nothing is playing."):
-            await respond(interaction, notice_text(note), ephemeral=True)
-            if not self._closed and self.paint():
-                try:
-                    await self._push(interaction)
-                except discord.HTTPException:
-                    log.warning("music player could not update", exc_info=True)
+        if note in ("Stopped.", "Nothing is playing."):
+            self.shutdown()
+            await self._close_message(interaction)
             return
-        self.shutdown()
+        await respond(interaction, notice_text(note), ephemeral=True)
+        if self._closed or not self.paint():
+            return
         try:
-            await interaction.delete_original_response()
+            await self._push(interaction)
         except discord.HTTPException:
-            log.warning("music player could not close", exc_info=True)
-
+            log.warning("music player could not update", exc_info=True)
     async def on_close(self, interaction: discord.Interaction) -> None:
-        """Remove the card and keep the next songs from posting another one.
-
-        Opening the player again is what lets a new song bring it back.
-        The card is the room's, so someone outside it cannot put it away.
-        """
-        if not self._inside(interaction):
-            await respond(interaction, notice_text("Join the voice channel first."), ephemeral=True)
+        if not await self._require_room(interaction):
             return
-        conceal = self._conceal
-        self._conceal = None
+        conceal, self._conceal = self._conceal, None
         if conceal is not None:
             conceal(self)
         self.shutdown()
         await self._ack(interaction)
-        try:
-            await interaction.delete_original_response()
-        except discord.HTTPException:
-            log.warning("music player could not close", exc_info=True)
-
+        await self._close_message(interaction)
     def _current(self) -> PlayState | None:
-        """The song on now. An empty room does not keep a player card."""
         state = now_playing(self.guild)
-        if state is None or not state.has_track:
-            return None
-        return state
-
+        if state is not None and state.has_track:
+            self._coming = None
+            return state
+        return preview_state(self._coming) if self._coming is not None else None
     def _left(self) -> bool:
-        """The bot was in voice while this card was up, and now it is out.
-
-        A song saved for later still reads as the current one, so that alone no
-        longer takes the card down. A card opened while the bot was already out
-        stays, because nothing ever put it in a room.
-        """
+        # Leaving voice takes the card, paused or not. A card opened while the bot was out stays.
         if getattr(self.guild, "voice_client", None) is not None:
             self._voiced = True
             return False
         return self._voiced
-
     def _holding(self) -> bool:
-        """The track dropped, and a song is still coming.
-
-        Repeat is the one that just ended. A song still waiting is the next one.
-        """
         state = now_playing(self.guild)
         if state is None or state.has_track:
             return False
-        if state.repeating:
-            return True
         line = _stored(self.guild)
-        return line is not None and bool(line.later)
-
+        return state.repeating or (line is not None and bool(line.later))
     async def on_volume(self, interaction: discord.Interaction) -> None:
-        """Open the box for the volume, the site, and the place in the song."""
-        if not self._inside(interaction):
-            await respond(interaction, notice_text("Join the voice channel first."), ephemeral=True)
+        if not await self._require_room(interaction):
             return
         state = now_playing(self.guild)
-        level = 100 if state is None else state.volume
-        length = 0 if state is None else state.length
+        row = _current_row(self.guild)
         await interaction.response.send_modal(_Volume(
             self._apply_volume,
-            level=level,
-            platform=_playing_platform(self.guild),
-            length=length,
+            level=100 if state is None else state.volume,
+            platform=source.normalize_platform(None if row is None else row.platform),
+            length=0 if state is None else state.length,
         ))
-
     async def _apply_volume(
-        self,
-        interaction: discord.Interaction,
-        level: int,
-        platform: str | None,
-        position: int | None,
+        self, interaction: discord.Interaction, level: int, platform: str | None, position: int | None,
     ) -> None:
         await self._act(
             interaction,
-            lambda: tune_track(self.guild, level, platform, position, interaction.user),
+            lambda: apply_playback(self.guild, level, platform, position, interaction.user),
+            "seek" if position is not None else None,
         )
-
     async def on_save(self, interaction: discord.Interaction) -> None:
-        """Save the song that is playing into a playlist."""
-        if not self._inside(interaction):
-            await respond(interaction, notice_text("Join the voice channel first."), ephemeral=True)
+        if not await self._require_room(interaction):
             return
         from music.playlist.card import _as_saved
         from music.playlist.popups import SaveSong
 
-        rows = queued(self.guild) or []
-        current = next((row for row in rows if row.playing), None)
+        current = _current_row(self.guild)
         if current is None:
             await respond(interaction, notice_text("Nothing is playing."), ephemeral=True)
             return
@@ -729,7 +456,6 @@ class MusicPlayer(_Album, _Radio, _Refresh, discord.ui.LayoutView):
             await respond(interaction, notice_text("There is no playlist yet."), ephemeral=True)
             return
         await interaction.response.send_modal(SaveSong(lists, lambda press, name: self._kept(press, name, song)))
-
     async def _kept(self, interaction: discord.Interaction, name: str, song: object) -> None:
         from music.archive import find_playlist, save_song
 
@@ -738,7 +464,99 @@ class MusicPlayer(_Album, _Radio, _Refresh, discord.ui.LayoutView):
             await respond(interaction, notice_text("That playlist is gone."), ephemeral=True)
             return
         updated = save_song(self._lists, guild_id, name, song, _record_id(interaction.user))
-        if isinstance(updated, str):
-            await respond(interaction, notice_text(updated), ephemeral=True)
-            return
-        await respond(interaction, notice_text(f"Saved to {updated.name}."), ephemeral=True)
+        if not isinstance(updated, str):
+            from music.playback.remember import warm_saved
+
+            warm_saved(self.guild, song)
+            updated = f"Saved to {updated.name}."
+        await respond(interaction, notice_text(updated), ephemeral=True)
+    def _aim(self) -> None:
+        bar, gallery = self._bars.bar, self._gallery
+        if bar is not None and gallery is not None:
+            gallery.items = [MediaGalleryItem(f"attachment://{bar.name}")]
+    def paint(self, *, move_bar: bool = True) -> bool:
+        state = self._current()
+        if state is None:
+            state = now_playing(self.guild)
+        shown = self._parts(state)
+        (
+            heading, song, status, _, pause_style, pause_off, repeat_off, repeat_style,
+            controls_off, shuffle_style, radio_style, shuffle_off,
+        ) = shown
+        playing = state is not None and state.has_track
+        # Drop a picture this paint will not send. The tick, a seek, and a new song cut the next frame.
+        self._bars.fresh = None
+        bar_changed = move_bar and self._bars.sync(
+            state, paused=playing and pause_style == discord.ButtonStyle.primary,
+            hearing=self._hearing(), seek=self._take_jump(),
+        )
+        if shown == self._shown and not bar_changed:
+            return False
+        self._shown = shown
+        self.heading.content, self.meta.content = heading, status
+        covered = f"{song}\n{status}" if song and status else song or status
+        self.song.content = covered if playing and self._cover else song
+        self.pause.style, self.pause.disabled = pause_style, pause_off
+        self.pause.label = _fit(PLAY_MARK if pause_style == discord.ButtonStyle.primary else PAUSE_MARK)
+        self.repeat.disabled, self.repeat.style = repeat_off, repeat_style
+        self.shuffle.disabled, self.shuffle.style = shuffle_off, shuffle_style
+        self.radio.style = radio_style
+        for button in (self.previous, self.next, self.volume, self.radio, self.save, self.info):
+            button.disabled = controls_off
+        shape = (playing, self._cover, bool(self.meta.content), self._bars.bar is not None)
+        if self._box is None or shape != self._face:
+            self._face = shape
+            self._mount(state)
+        elif bar_changed:
+            self._aim()
+        return True
+    def _parts(self, state: PlayState | None) -> tuple:
+        if state is None or not state.has_track:
+            self._cover = None
+            channel = None if state is None else state.channel_id
+            return _face("**Nothing is playing**", "", meta_line(None, channel))
+        paused, repeating, shuffling, radio = state.paused, state.repeating, state.shuffling, state.radio
+        title, author, uri, artwork = state.title, state.author, state.uri, state.artwork
+        kind, value = self._hint or (None, None)
+        if kind == "pause" and isinstance(value, bool):
+            paused = value
+        elif kind in ("repeat", "shuffle", "radio") and isinstance(value, bool):
+            repeating, shuffling, radio = hinted_modes(repeating, shuffling, radio, kind, value)
+        elif kind == "next":
+            title, author, uri, artwork = _details(getattr(value, "track", value), title, author, uri, artwork)
+        self._cover = artwork
+        # A livestream cannot start repeat. Leave it on when repeat is already on.
+        return _face(
+            "", song_line(title, author, uri), _status(
+                state, repeating=repeating, shuffling=shuffling, radio_on=radio,
+            ),
+            pause=_lit(paused), pause_off=False,
+            repeat_off=(state.stream or state.length <= 0) and not repeating, repeat=_lit(repeating),
+            controls_off=False, shuffle=_lit(shuffling), radio=_lit(radio), shuffle_off=radio,
+        )
+    def _mount(self, state: PlayState | None) -> None:
+        if self._box is not None:
+            self.remove_item(self._box)
+        box = discord.ui.Container(accent_colour=ACCENT_COLOR)
+        box.add_item(discord.ui.Section(TITLE, accessory=self.leave))
+        box.add_item(discord.ui.Separator())
+        playing = state is not None and state.has_track
+        if playing and self._cover and state is not None:
+            box.add_item(discord.ui.Section(
+                self.song,
+                accessory=discord.ui.Thumbnail(self._cover, description=song_label(state.title, state.author)[:256]),
+            ))
+        else:
+            box.add_item(self.song if playing else self.heading)
+            if self.meta.content:
+                box.add_item(self.meta)
+        bar, self._gallery = self._bars.bar, None
+        if bar is not None:
+            self._gallery = discord.ui.MediaGallery()
+            self._aim()
+            box.add_item(self._gallery)
+        box.add_item(discord.ui.Separator())
+        box.add_item(_row(self.shuffle, self.previous, self.pause, self.next, self.repeat))
+        box.add_item(_row(self.save, self.info, self.radio, self.volume, self.close))
+        self._box = box
+        self.add_item(box)

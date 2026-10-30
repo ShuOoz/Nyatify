@@ -14,6 +14,7 @@ from music.panel import (
 from music.playback import (
     earlier_at,
     leave_if_idle,
+    paused_away,
     played,
     playing_note,
     queue_tracks,
@@ -56,7 +57,11 @@ class _History:
             if found is None:
                 await _defer(interaction)
                 return
-            cold = getattr(interaction.guild, "voice_client", None) is None
+            # A paused song is still current. Joining would sit there in silence.
+            cold = (
+                getattr(interaction.guild, "voice_client", None) is None
+                and not paused_away(interaction.guild)
+            )
             if cold:
                 warm_voice(interaction.user, interaction.guild)
             await interaction.response.defer()
@@ -77,7 +82,7 @@ class _History:
             if not _heard(line) or line.startswith("Added "):
                 await _note(interaction, line)
         finally:
-            self._working = False
+            await self._release()
             if cold:
                 asyncio.create_task(leave_if_idle(interaction.guild), name="music-idle")
 

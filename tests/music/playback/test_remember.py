@@ -16,7 +16,7 @@ from music.playback import (
     played,
     queue_tracks,
     queued,
-    release,
+    save_and_clear,
     save_open_lines,
     toggle_pause,
     unwatch_line,
@@ -26,9 +26,14 @@ from music.playback import (
 )
 from music.player.card import MusicPlayer
 
-from tests.music.support import _Player, _named, _playing
+from tests.music.support import _Player, _named, _playing, _scene
 
-async def test_a_slow_queue_card_does_not_hold_up_play():
+async def test_the_open_line_shows_the_next_song():
+    """A slow queue card does not hold up play, and up next keeps an artist inside another word."""
+    await case_a_slow_queue_card_does_not_hold_up_play()
+    await case_up_next_keeps_an_artist_inside_another_word()
+
+async def case_a_slow_queue_card_does_not_hold_up_play():
     guild, player, track = await _playing()
     started = asyncio.Event()
     release = asyncio.Event()
@@ -52,7 +57,55 @@ async def test_a_slow_queue_card_does_not_hold_up_play():
         if guild.voice_client is not None:
             await stop_track(guild)
 
-async def test_a_restart_reads_the_saved_queue_and_history():
+async def case_up_next_keeps_an_artist_inside_another_word():
+    """Air is a whole artist. It stays on Airplane, and drops from Air on the G String."""
+    guild = MagicMock()
+    guild.id = 844
+    guild.voice_client = None
+    await stop_track(guild)
+    channel = MagicMock()
+    player = _Player(channel)
+    channel.connect = AsyncMock(return_value=player)
+
+    async def play(track):
+        player._track = track
+
+    player.play.side_effect = play
+    member = MagicMock()
+    member.id = 9
+    member.voice.channel = channel
+    now = _named("Now", "Ada")
+    now.uri = "https://example.com/now"
+    plane = _named("Airplane", "Air")
+    plane.uri = "https://example.com/airplane"
+    classic = _named("Air on the G String", "Air")
+    classic.uri = "https://example.com/classic"
+    try:
+        assert await queue_tracks(member, guild, [now, plane]) == "Playing Now."
+        guild.voice_client = player
+        assert now_playing(guild).upcoming == "Airplane - Air"
+        assert await queue_tracks(member, guild, [classic]) == "Added Air on the G String."
+        assert now_playing(guild).upcoming == "Airplane - Air"
+        assert await next_track(guild) is None
+        assert now_playing(guild).upcoming == "Air on the G String"
+    finally:
+        await stop_track(guild)
+
+
+async def test_a_saved_line():
+    """A restart, an unload, and a leave put the queue back. A live line is not replaced, and a clear stays cleared."""
+    await _scene(case_a_restart_reads_the_saved_queue_and_history)
+    await _scene(case_unloading_after_the_bot_leaves_keeps_the_queue)
+    await _scene(case_leaving_then_loading_puts_the_queue_back)
+    await _scene(case_a_live_line_is_not_replaced_by_the_saved_one)
+    await _scene(case_saving_keeps_what_was_cleared)
+
+async def case_a_restart_reads_the_saved_queue_and_history():
+    """A restart reads the saved queue and history. A saved station still reads the old video list."""
+    await case_a_restart_reads_the_saved_queue_and_history()
+    case_a_saved_station_still_reads_the_old_video_list()
+
+async def case_a_restart_reads_the_saved_queue_and_history():
     import music.playback as playback
 
     guild = MagicMock()
@@ -77,7 +130,7 @@ async def test_a_restart_reads_the_saved_queue_and_history():
         assert await queue_tracks(member, guild, [one, two, three]) == "Playing One."
         guild.voice_client = player
         assert await next_track(guild) is None
-        release(guild)
+        save_and_clear(guild)
         assert playback._stored(guild) is None
 
         playback._lines.clear()
@@ -109,7 +162,7 @@ async def test_a_restart_reads_the_saved_queue_and_history():
     finally:
         await stop_track(guild)
 
-async def test_unloading_after_the_bot_leaves_keeps_the_queue():
+async def case_unloading_after_the_bot_leaves_keeps_the_queue():
     import music.playback as playback
 
     guild = MagicMock()
@@ -135,7 +188,7 @@ async def test_unloading_after_the_bot_leaves_keeps_the_queue():
         assert await queue_tracks(member, guild, [one, two, three]) == "Playing One."
         guild.voice_client = player
         assert await next_track(guild) is None
-        release(guild)
+        save_and_clear(guild)
         save_open_lines()
 
         playback._lines.clear()
@@ -150,7 +203,7 @@ async def test_unloading_after_the_bot_leaves_keeps_the_queue():
         await stop_track(guild)
 
 
-async def test_leaving_then_loading_puts_the_queue_back():
+async def case_leaving_then_loading_puts_the_queue_back():
     """History stays after a leave. That must not hide the queue on the next load."""
     guild = MagicMock()
     guild.id = 88
@@ -181,7 +234,7 @@ async def test_leaving_then_loading_puts_the_queue_back():
         line.radio = True
         line.shuffle = True
         line.order = list(line.later)
-        release(guild)
+        save_and_clear(guild)
         assert _stored(guild) is None
 
         load_saved_lines()
@@ -197,7 +250,7 @@ async def test_leaving_then_loading_puts_the_queue_back():
         await stop_track(guild)
 
 
-async def test_a_live_line_is_not_replaced_by_the_saved_one():
+async def case_a_live_line_is_not_replaced_by_the_saved_one():
     import music.archive as archive
 
     guild = MagicMock()
@@ -244,7 +297,12 @@ async def test_a_live_line_is_not_replaced_by_the_saved_one():
         await stop_track(guild)
 
 
-async def test_stopping_then_saving_does_not_bring_the_queue_back():
+async def case_saving_keeps_what_was_cleared():
+    """Stopping then saving does not bring the queue back. Clearing history then saving keeps the queue."""
+    await case_stopping_then_saving_does_not_bring_the_queue_back()
+    await case_clearing_history_then_saving_keeps_the_queue()
+
+async def case_stopping_then_saving_does_not_bring_the_queue_back():
     import music.archive as archive
     import music.playback as playback
 
@@ -290,7 +348,7 @@ async def test_stopping_then_saving_does_not_bring_the_queue_back():
         await stop_track(guild)
 
 
-async def test_clearing_history_then_saving_keeps_the_queue():
+async def case_clearing_history_then_saving_keeps_the_queue():
     import music.playback as playback
 
     guild = MagicMock()
@@ -329,7 +387,17 @@ async def test_clearing_history_then_saving_keeps_the_queue():
         await stop_track(guild)
 
 
-async def test_a_restart_still_shows_a_paused_song():
+async def test_a_restart_plays_the_saved_line(monkeypatch):
+    """The paused song and its platform are still there. A new song starts in front, a dead one is skipped, songs past the cap drop, and losing the current song keeps the next one on."""
+    await _scene(case_a_restart_still_shows_a_paused_song)
+    await _scene(case_a_reload_keeps_the_platform_of_the_song_still_playing)
+    await _scene(case_a_song_added_after_a_restart_starts_and_the_saved_ones_wait, monkeypatch=monkeypatch)
+    await _scene(case_a_song_that_does_not_start_after_a_restart_keeps_the_saved_ones, monkeypatch=monkeypatch)
+    await _scene(case_a_dead_song_after_a_restart_tries_the_next_one, monkeypatch=monkeypatch)
+    await _scene(case_a_restart_drops_saved_songs_past_the_waiting_cap, monkeypatch=monkeypatch)
+    await _scene(case_a_lost_current_song_keeps_the_next_one_on, monkeypatch=monkeypatch)
+
+async def case_a_restart_still_shows_a_paused_song():
     import discord
 
     import music.playback as playback
@@ -360,7 +428,7 @@ async def test_a_restart_still_shows_a_paused_song():
         player._track = song
         assert await toggle_pause(guild) is None
         assert player.paused is True
-        release(guild)
+        save_and_clear(guild)
 
         playback._lines.clear()
         playback._heard.clear()
@@ -391,7 +459,7 @@ async def test_a_restart_still_shows_a_paused_song():
         await stop_track(guild)
 
 
-def test_a_saved_station_still_reads_the_old_video_list():
+def case_a_saved_station_still_reads_the_old_video_list():
     import music.playback as playback
 
     song = playback._load_song({
@@ -418,7 +486,7 @@ def test_a_saved_station_still_reads_the_old_video_list():
     assert "lives" not in saved
     assert "live_at" not in saved
 
-async def test_a_reload_keeps_the_platform_of_the_song_still_playing():
+async def case_a_reload_keeps_the_platform_of_the_song_still_playing():
     import music.playback as playback
 
     guild = MagicMock()
@@ -469,7 +537,8 @@ async def test_a_reload_keeps_the_platform_of_the_song_still_playing():
     finally:
         await stop_track(guild)
 
-async def test_a_song_added_after_a_restart_stays_on_the_end(monkeypatch):
+async def case_a_song_added_after_a_restart_starts_and_the_saved_ones_wait(monkeypatch):
+    """After a restart, the song you asked for starts. The saved songs wait behind it."""
     import music.playback as playback
 
     guild = MagicMock()
@@ -503,7 +572,7 @@ async def test_a_song_added_after_a_restart_stays_on_the_end(monkeypatch):
         assert await queue_tracks(member, guild, [one, two, three]) == "Playing One."
         guild.voice_client = player
         assert await next_track(guild) is None
-        release(guild)
+        save_and_clear(guild)
         plays = player.play.await_count
         connects = channel.connect.await_count
 
@@ -511,19 +580,19 @@ async def test_a_song_added_after_a_restart_stays_on_the_end(monkeypatch):
         playback._heard.clear()
         playback._missing.clear()
         guild.voice_client = None
-        assert await queue_tracks(member, guild, [named("Four")]) == "Playing Two."
+        assert await queue_tracks(member, guild, [named("Four")]) == "Playing Four."
         assert player.play.await_count == plays + 1
         assert channel.connect.await_count == connects + 1
         guild.voice_client = player
         line = _stored(guild)
         assert line is not None and line.current is not None
-        assert line.current.track.title == "Two"
-        assert [song.track.title for song in line.later] == ["Three", "Four"]
+        assert line.current.track.title == "Four"
+        assert [song.track.title for song in line.later] == ["Two", "Three"]
 
         assert await queue_tracks(member, guild, [named("Five"), named("Six")]) == "Added 2 songs."
         assert player.play.await_count == plays + 1
         assert [song.track.title for song in _stored(guild).later] == [
-            "Three", "Four", "Five", "Six",
+            "Two", "Three", "Five", "Six",
         ]
 
         guild.voice_client = None
@@ -531,9 +600,170 @@ async def test_a_song_added_after_a_restart_stays_on_the_end(monkeypatch):
         playback._heard.clear()
         playback._missing.clear()
         rows = queued(guild)
-        assert [row.title for row in rows] == ["Two", "Three", "Four", "Five", "Six"]
+        assert [row.title for row in rows] == ["Four", "Two", "Three", "Five", "Six"]
         assert [row.playing for row in rows] == [True, False, False, False, False]
         assert [row.title for row in played(guild)] == ["One"]
+    finally:
+        await stop_track(guild)
+
+
+async def case_a_song_that_does_not_start_after_a_restart_keeps_the_saved_ones(monkeypatch):
+    """The new song fails. The saved queue is still the one that was left."""
+    import wavelink
+
+    import music.playback as playback
+
+    guild = MagicMock()
+    guild.id = 801
+    guild.voice_client = None
+    await stop_track(guild)
+    channel = MagicMock()
+    player = _Player(channel)
+    channel.connect = AsyncMock(return_value=player)
+
+    async def play(track):
+        player._track = track
+
+    player.play.side_effect = play
+    member = MagicMock()
+    member.id = 9
+    member.voice.channel = channel
+
+    def named(title: str):
+        track = _named(title)
+        track.uri = f"https://example.com/{title.casefold()}"
+        return track
+
+    async def search(_guild, query, platform="youtube", mode=None):
+        track = named(query.rsplit("/", 1)[-1].title())
+        return Found(query, platform, [track], True)
+
+    monkeypatch.setattr("music.playback.find_songs", search)
+    try:
+        assert await queue_tracks(member, guild, [named("One"), named("Two"), named("Three")]) == "Playing One."
+        guild.voice_client = player
+        assert await next_track(guild) is None
+        save_and_clear(guild)
+        playback._lines.clear()
+        playback._heard.clear()
+        playback._missing.clear()
+        guild.voice_client = None
+        player.play.side_effect = wavelink.WavelinkException("no")
+        assert await queue_tracks(member, guild, [named("Four")]) == "YouTube did not start that song."
+        held = _stored(guild)
+        assert held is not None and held.current is None
+        assert [song.track.title for song in held.later] == ["Two", "Three"]
+    finally:
+        player.play.side_effect = None
+        guild.voice_client = None
+        await stop_track(guild)
+
+
+async def case_a_dead_song_after_a_restart_tries_the_next_one(monkeypatch):
+    """The first song of the request does not start. The next one does, and the saved songs wait."""
+    import wavelink
+
+    import music.playback as playback
+
+    guild = MagicMock()
+    guild.id = 803
+    guild.voice_client = None
+    await stop_track(guild)
+    channel = MagicMock()
+    player = _Player(channel)
+    channel.connect = AsyncMock(return_value=player)
+
+    async def play(track):
+        if getattr(track, "title", None) == "Dead":
+            raise wavelink.WavelinkException("no")
+        player._track = track
+
+    player.play.side_effect = play
+    member = MagicMock()
+    member.id = 9
+    member.voice.channel = channel
+
+    def named(title: str):
+        track = _named(title)
+        track.uri = f"https://example.com/{title.casefold()}"
+        return track
+
+    async def search(_guild, query, platform="youtube", mode=None):
+        track = named(query.rsplit("/", 1)[-1].title())
+        return Found(query, platform, [track], True)
+
+    monkeypatch.setattr("music.playback.find_songs", search)
+    try:
+        assert await queue_tracks(member, guild, [named("One"), named("Two"), named("Three")]) == "Playing One."
+        guild.voice_client = player
+        assert await next_track(guild) is None
+        save_and_clear(guild)
+        playback._lines.clear()
+        playback._heard.clear()
+        playback._missing.clear()
+        guild.voice_client = None
+        player._track = None
+        assert await queue_tracks(member, guild, [named("Dead"), named("Four")]) == (
+            "Playing Four. Skipped Dead."
+        )
+        line = _stored(guild)
+        assert line is not None and line.current is not None
+        assert line.current.track.title == "Four"
+        assert [song.track.title for song in line.later] == ["Two", "Three"]
+    finally:
+        await stop_track(guild)
+
+
+async def case_a_restart_drops_saved_songs_past_the_waiting_cap(monkeypatch):
+    """The new songs go first. Saved songs past the waiting cap drop from the end."""
+    from music.playback import QUEUE_SONGS
+
+    import music.playback as playback
+
+    guild = MagicMock()
+    guild.id = 802
+    guild.voice_client = None
+    await stop_track(guild)
+    channel = MagicMock()
+    player = _Player(channel)
+    channel.connect = AsyncMock(return_value=player)
+
+    async def play(track):
+        player._track = track
+
+    player.play.side_effect = play
+    member = MagicMock()
+    member.id = 9
+    member.voice.channel = channel
+
+    def named(title: str):
+        track = _named(title)
+        track.uri = f"https://example.com/{title.casefold()}"
+        return track
+
+    async def search(_guild, query, platform="youtube", mode=None):
+        track = named(query.rsplit("/", 1)[-1].title())
+        return Found(query, platform, [track], True)
+
+    monkeypatch.setattr("music.playback.find_songs", search)
+    tracks = [named(str(index)) for index in range(QUEUE_SONGS + 1)]
+    try:
+        assert await queue_tracks(member, guild, tracks) == "Playing 0."
+        guild.voice_client = player
+        save_and_clear(guild)
+        playback._lines.clear()
+        playback._heard.clear()
+        playback._missing.clear()
+        guild.voice_client = None
+        assert await queue_tracks(member, guild, [named("New"), named("Next")]) == (
+            "Playing New. The queue is full."
+        )
+        line = _stored(guild)
+        assert line is not None and line.current is not None
+        assert line.current.track.title == "New"
+        assert [song.track.title for song in line.later] == (
+            ["Next"] + [str(index) for index in range(QUEUE_SONGS - 1)]
+        )
     finally:
         await stop_track(guild)
 
@@ -545,7 +775,7 @@ def _song(title: str):
     return track
 
 
-async def test_a_lost_current_song_keeps_the_next_one_on(monkeypatch):
+async def case_a_lost_current_song_keeps_the_next_one_on(monkeypatch):
     """The song on now can vanish. The queue stays, and someone in the channel still has a song."""
     from cogs.osa_musify import OsaMusify
     from music.playlist.card import now_text
@@ -592,8 +822,8 @@ async def test_a_lost_current_song_keeps_the_next_one_on(monkeypatch):
         held.current = None
         held.resting = False
         held.paused = True
-        held.spot = 40_000
-        release(guild)
+        held.position = 40_000
+        save_and_clear(guild)
         playback._lines.clear()
         playback._heard.clear()
         playback._missing.clear()
@@ -638,7 +868,13 @@ async def test_a_lost_current_song_keeps_the_next_one_on(monkeypatch):
         await stop_track(guild)
 
 
-async def test_a_song_still_on_the_player_stays_ahead_of_the_queue():
+async def test_the_song_stays_when_the_link_drops():
+    """The current song stays ahead of the queue, stays current when the link drops, and is not called saved while it is still joining."""
+    await case_a_song_still_on_the_player_stays_ahead_of_the_queue()
+    await case_a_paused_song_stays_current_when_the_link_drops_without_a_release()
+    await case_a_song_that_is_still_joining_is_not_called_saved()
+
+async def case_a_song_still_on_the_player_stays_ahead_of_the_queue():
     """A track that is actually on keeps its place. The queue does not step over it."""
     guild, player, track = await _playing()
     try:
@@ -691,7 +927,7 @@ async def _paused_with_next(guild_id: int):
     return guild, member, player
 
 
-async def test_a_paused_song_stays_current_when_the_link_drops_without_a_release():
+async def case_a_paused_song_stays_current_when_the_link_drops_without_a_release():
     """The bot is out, the line was never released. It is the saved song, not an empty player."""
     from music.playback import drop_queued
 
@@ -713,7 +949,13 @@ async def test_a_paused_song_stays_current_when_the_link_drops_without_a_release
         await stop_track(guild)
 
 
-async def test_the_player_card_still_opens_for_a_paused_song_after_the_bot_leaves():
+async def test_a_paused_leave_keeps_the_song():
+    """The card still opens after the bot leaves. A failed disconnect keeps the song, including while the bot is still in voice."""
+    await case_the_player_card_still_opens_for_a_paused_song_after_the_bot_leaves()
+    await case_a_pause_that_leaves_keeps_the_song_even_when_the_disconnect_fails()
+    await case_a_disconnect_that_fails_while_still_in_voice_keeps_the_player()
+
+async def case_the_player_card_still_opens_for_a_paused_song_after_the_bot_leaves():
     from cogs.osa_musify import _on_now
 
     guild, _member, _player = await _paused_with_next(9811)
@@ -725,18 +967,19 @@ async def test_the_player_card_still_opens_for_a_paused_song_after_the_bot_leave
         assert "Nothing is playing" not in card.heading.content
         # A card opened while the bot is out stays up. It never saw a room.
         assert card._left() is False
-        # A card that did see the bot in voice goes once the bot is out.
+        # A card that saw the bot goes when the bot leaves, even while the song is paused.
         seen = MusicPlayer(guild)
         guild.voice_client = _player
         assert seen._left() is False
         guild.voice_client = None
         assert seen._left() is True
+        assert _stored(guild) is not None and _stored(guild).paused is True
     finally:
         guild.voice_client = None
         await stop_track(guild)
 
 
-async def test_a_pause_that_leaves_keeps_the_song_even_when_the_disconnect_fails():
+async def case_a_pause_that_leaves_keeps_the_song_even_when_the_disconnect_fails():
     import music.playback as playback
     from music.playback import start
 
@@ -769,7 +1012,7 @@ async def test_a_pause_that_leaves_keeps_the_song_even_when_the_disconnect_fails
         await stop_track(guild)
 
 
-async def test_a_disconnect_that_fails_while_still_in_voice_keeps_the_player():
+async def case_a_disconnect_that_fails_while_still_in_voice_keeps_the_player():
     from music.playback import start
 
     guild, _member, player = await _paused_with_next(9813)
@@ -784,7 +1027,7 @@ async def test_a_disconnect_that_fails_while_still_in_voice_keeps_the_player():
         await stop_track(guild)
 
 
-async def test_a_song_that_is_still_joining_is_not_called_saved():
+async def case_a_song_that_is_still_joining_is_not_called_saved():
     """While a join is in flight the line is left alone."""
     import music.lavalink as lavalink
 

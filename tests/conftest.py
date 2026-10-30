@@ -67,6 +67,19 @@ def fresh_state(base):
     return restore
 
 
+def _clear_play_cache() -> None:
+    """A song opened in one test must not answer the next test's lookup."""
+    import music.playback.remember as remembered
+    import music.player.card as card
+
+    for task in remembered._opening.values():
+        task.cancel()
+    remembered._opening.clear()
+    remembered._opened.clear()
+    card._staged.clear()
+    card._cards.clear()
+
+
 @pytest.fixture(autouse=True)
 def _fresh_state(tmp_path):
     """Saved exits, phones, sit-outs and guests stay in the test tmp dir."""
@@ -82,11 +95,13 @@ def _fresh_state(tmp_path):
     playback._heard.clear()
     playback._missing.clear()
     playback._requesters.clear()
+    _clear_play_cache()
     yield
     playback._lines.clear()
     playback._heard.clear()
     playback._missing.clear()
     playback._requesters.clear()
+    _clear_play_cache()
     archive.PATH = previous
     archive._book = None
     archive._cache_path = None

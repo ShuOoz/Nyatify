@@ -9,21 +9,20 @@ from collections.abc import Awaitable, Callable
 import discord
 
 from announce import ACCENT_COLOR
-from music.archive import PLAYLIST_LIMIT, SONG_LIMIT, SavedSong
+from music.archive import PLAYLIST_LIMIT, SONG_LIMIT, SavedList, SavedSong
 from music.panel import (
     MARK_ADD, MARK_BACK, MARK_CLOSE, MARK_LIST, MARK_NEXT, MARK_SAVE, MARK_SEARCH,
-    PAGE, RADIO_MARK,
-    _Card, _Mark, _Menu, _clip, _hold_card, _link, _name_in_title, _note, _row,
-    format_clock, song_row,
+    PAGE, RADIO_MARK, Started,
+    _Card, _Mark, _Menu, _clip, _hold_card, _link, _name_in_title, _row,
+    format_clock, queue_is_full, song_row,
 )
-from music.playback import played, queued, skipped_songs, unwatch_line, watch_line
+from music.playback import Queued, played, queued, skipped_songs, unwatch_line, watch_line
 from music.source import platform_label
 
 _READ_AT_ONCE = 4
 TITLE = "## Osaka Playlist"
 QUEUE, HISTORY, PLAYLISTS = "Queue", "History", "Playlist"
 MARK_DELETE, MARK_MINUS, MARK_MOVE = "⌫", "－", "⇵"
-MARK_LINE = MARK_LIST
 PICK = "Pick a playlist"
 _ENTRY = 4000
 _PAD, _HALF, _GAP = "\u3164", "\uffa0", "\u00a0"
@@ -32,9 +31,6 @@ LABEL_YOUR = f"{_PAD}{_HALF}@Your{_HALF}{_PAD}"
 LABEL_ADJUST = f"{_PAD}{_HALF}Adjust{_HALF}{_PAD}"
 LABEL_NEW_LIST = f"{_PAD}{_HALF}Create{_HALF}{_PAD}"
 LABEL_REMOVE = f"{_PAD}Delete{_PAD}"
-_BUSY = "Already working on that."
-_MENTIONS = discord.AllowedMentions.none()
-
 
 def _plain(value: str) -> str:
     return " ".join(value.split())
@@ -45,27 +41,22 @@ def _lit(on: bool) -> discord.ButtonStyle:
 
 
 def _clock(line: str, duration: int | None) -> str:
-    if duration is None:
-        return line
-    return f"{line}  |  {format_clock(duration)}"
-
-
-def _one(count: int, singular: str, plural: str) -> str:
-    return singular if count == 1 else plural
+    return line if duration is None else f"{line}  |  {format_clock(duration)}"
 
 
 def now_text(row: Queued | None, *, shuffling: bool = False) -> str:
     if row is None:
         return "### Nothing is playing\n-# Use /music play to play a song"
     title = _plain(row.title) or "Unknown"
-    artist = "" if _name_in_title(_plain(row.author), title) else _clip(_plain(row.author))
-    parts = [artist, format_clock(row.length) if row.length > 0 else ""]
+    artist = _plain(row.author)
     # A station has no site. Every other song names one, including the one playing now.
-    if not row.stream:
-        parts.append(platform_label("", row.platform))
+    detail = " · ".join(part for part in (
+        "" if _name_in_title(artist, title) else _clip(artist),
+        format_clock(row.length) if row.length > 0 else "",
+        "" if row.stream else platform_label("", row.platform),
+    ) if part)
     head = "### Now Playing - On shuffle" if shuffling else "### Now Playing"
     lines = [head, f"**{_link(_clip(title), row.url)}**"]
-    detail = " · ".join(part for part in parts if part)
     if detail:
         lines.append(detail)
     if row.stream:
@@ -84,7 +75,7 @@ def saved_row(index: int, song: SavedSong, *, site: bool) -> str:
 
 
 def _mixed_platforms(songs: tuple[SavedSong, ...]) -> bool:
-    return bool(songs) and any(song.platform != songs[0].platform for song in songs)
+    return len({song.platform for song in songs}) > 1
 
 
 def pick_text() -> str:
@@ -98,21 +89,17 @@ def empty_text(name: str) -> str:
     return f"-# {name} has no songs"
 
 
-def _tab_label(name: str, widened: bool) -> str:
+def _tab_label(name: str, selected: bool) -> str:
     side = _PAD if name == PLAYLISTS else _PAD + _HALF
-    if widened:
-        side += _HALF
-        return f"{side}{_GAP}{name}{_GAP}{side}"
-    return f"{side}{name}{side}"
+    if not selected:
+        return f"{side}{name}{side}"
+    side += _HALF
+    return f"{side}{_GAP}{name}{_GAP}{side}"
 
 
 class _Tab(discord.ui.Button):
-    def __init__(self, panel: str, selected: bool, widened: bool = False, *, id: int | None = None) -> None:
-        super().__init__(
-            label=_tab_label(panel, selected or widened),
-            style=_lit(selected),
-            id=id,
-        )
+    def __init__(self, panel: str, selected: bool, *, id: int | None = None) -> None:
+        super().__init__(label=_tab_label(panel, selected), style=_lit(selected), id=id)
         self.panel = panel
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -121,30 +108,26 @@ class _Tab(discord.ui.Button):
             await handler(interaction, self.panel)
 
 
-def _status(page: int, pages: int, count: int, noun: str, duration: int | None) -> str:
-    return _clock(f"Page {page}/{pages}  |  {count} {noun}", duration)
-
-
 def _queued_noun(count: int) -> str:
-    return _one(count, "song in queue", "songs in queue")
+    return "song in queue" if count == 1 else "songs in queue"
 
 
 def _song_noun(count: int) -> str:
-    return _one(count, "song", "songs")
+    return "song" if count == 1 else "songs"
 
 
 def _list_noun(count: int) -> str:
-    return _one(count, "playlist", "playlists")
+    return "playlist" if count == 1 else "playlists"
 
 
 def _span(rows: list[Queued]) -> int | None:
+    """Unknown when every row is a station. A mix counts only the songs that have a length."""
     total = sum(row.length for row in rows if row.length > 0)
-    if rows and total == 0:
-        return None
-    return total
+    return None if rows and total == 0 else total
 
 
 def _song_span(songs: tuple[SavedSong, ...]) -> int | None:
+    """Unknown when any saved song has no length. An empty list is zero."""
     if any(song.length <= 0 for song in songs):
         return None
     return sum(song.length for song in songs)
@@ -152,9 +135,7 @@ def _song_span(songs: tuple[SavedSong, ...]) -> int | None:
 
 def _saved_span(lists: list[SavedList]) -> int | None:
     spans = [_song_span(saved.songs) for saved in lists]
-    if any(span is None for span in spans):
-        return None
-    return sum(spans)
+    return None if None in spans else sum(spans)
 
 
 def _rule(part: int | None = None) -> discord.ui.Separator:
@@ -201,8 +182,8 @@ def _track_length(track: object) -> int:
 
 
 def _heard(line: str) -> bool:
-    quiet = line.startswith(("Playing ", "Added ")) and " Skipped " not in line
-    return quiet and not line.endswith("The queue is full.")
+    started = line.startswith(("Playing ", "Added ")) and " Skipped " not in line
+    return started and not queue_is_full(line)
 
 
 async def _defer(interaction: discord.Interaction) -> None:
@@ -216,6 +197,26 @@ def _song_snap(row: Queued) -> tuple:
         row.playing, row.stream, row.requester_id,
     )
 
+_MENTIONS = discord.AllowedMentions.none()
+
+def _face(
+    button: _Mark,
+    label: str,
+    method: str,
+    *,
+    index: int | None = None,
+    disabled: bool = False,
+    on: bool = False,
+    style: discord.ButtonStyle | None = None,
+) -> _Mark:
+    """The button object stays. A tab or a page only changes its words and its action."""
+    button.label = label
+    button.method = method
+    button.index = index
+    button.disabled = disabled
+    button.style = _lit(on) if style is None else style
+    return button
+
 
 # Words above are bound first. The tabs import them, then this card imports the tabs.
 from music.playlist.history import _History
@@ -225,7 +226,7 @@ from music.playlist.queue import _Queue
 log = logging.getLogger(__name__)
 
 
-class LiveLine(_Queue, _Lists, _History, _Card):
+class PlaylistCard(_Queue, _Lists, _History, _Card):
     def __init__(
         self,
         guild: object,
@@ -253,6 +254,7 @@ class LiveLine(_Queue, _Lists, _History, _Card):
         self._mine_id: int | None = None
         self._history_draw: tuple[tuple, ...] = ()
         self._filled: set[str] = set()
+        self._line_due = False
         self._box: discord.ui.Container | None = None
         self._shown: tuple | None = None
         self._watch: Callable[[object], Awaitable[None]] | None = None
@@ -263,17 +265,15 @@ class LiveLine(_Queue, _Lists, _History, _Card):
             [discord.SelectOption(label="Playlist", value="0")],
             "music-playlist",
         )
-        # The same controls stay on the card. A page or a tab only changes their words.
         self.menu.id = 19
         self._corner_button = _Mark(MARK_SEARCH, "on_add", id=4)
         self._tabs = {
-            QUEUE: _Tab(QUEUE, True, id=7),
-            HISTORY: _Tab(HISTORY, False, id=8),
-            PLAYLISTS: _Tab(PLAYLISTS, False, id=9),
+            name: _Tab(name, name == self.panel, id=number)
+            for name, number in ((QUEUE, 7), (HISTORY, 8), (PLAYLISTS, 9))
         }
-        self._side_button = _Mark(MARK_LINE, "on_queue_list", id=10)
+        self._side_button = _Mark(MARK_LIST, "on_queue_list", id=10)
         self._back = _Mark(MARK_BACK, "on_back", id=63)
-        self._next = _Mark(MARK_NEXT, "on_forward", id=64)
+        self._next = _Mark(MARK_NEXT, "on_next", id=64)
         self._wide_button = _Mark(LABEL_ADJUST, "on_order", id=65)
         self._narrow_button = _Mark(LABEL_EMPTY, "on_empty", id=66)
         self._close = _Mark(MARK_CLOSE, "on_close", id=67)
@@ -301,8 +301,29 @@ class LiveLine(_Queue, _Lists, _History, _Card):
             unwatch_line(watch)
 
     async def _on_line(self, guild: object) -> None:
-        if _id(guild) != _id(self.guild) or self.is_finished() or self._working:
+        if _id(guild) != _id(self.guild) or self.is_finished():
             return
+        # A click paints when it finishes. Keep the change that arrived during it.
+        if self._working:
+            self._line_due = True
+            return
+        await self._paint_line()
+
+    async def _release(self) -> None:
+        """This click is done. The card refreshes once the latest click has finished too."""
+        self._end_press()
+        if self._working or not self._catch_due:
+            return
+        self._catch_due = False
+        await self._catch_line()
+
+    async def _catch_line(self) -> None:
+        if not self._line_due or self._working or self.is_finished():
+            return
+        self._line_due = False
+        await self._paint_line()
+
+    async def _paint_line(self) -> None:
         if self.message is None or self._snap() == self._shown:
             return
         self.paint()
@@ -338,17 +359,13 @@ class LiveLine(_Queue, _Lists, _History, _Card):
         ))
         box.add_item(discord.ui.Separator(id=5))
         box.add_item(_row(
-            self._paint_tab(QUEUE),
-            self._paint_tab(HISTORY),
-            self._paint_tab(PLAYLISTS),
+            *(self._paint_tab(name) for name in (QUEUE, HISTORY, PLAYLISTS)),
             self._side(),
             id=6,
         ))
         box.add_item(_rule(11))
-        if self.panel == PLAYLISTS and self.opened is not None:
-            summary = self._open_list(box)
-        elif self.panel == PLAYLISTS:
-            summary = self._lists(box)
+        if self.panel == PLAYLISTS:
+            summary = (self._open_list if self.opened is not None else self._lists)(box)
         elif self.panel == HISTORY:
             summary = self._played(box)
         else:
@@ -378,22 +395,13 @@ class LiveLine(_Queue, _Lists, _History, _Card):
         style: discord.ButtonStyle = discord.ButtonStyle.secondary,
     ) -> None:
         """One of the five song rows. The button stays; the words and the action change."""
-        button = self._slots[slot]
-        button.label = label
-        button.method = method
-        button.index = index
-        button.disabled = False
-        button.style = style
         box.add_item(discord.ui.Section(
             discord.ui.TextDisplay(text, id=40 + slot),
-            accessory=button,
+            accessory=_face(self._slots[slot], label, method, index=index, style=style),
             id=30 + slot,
         ))
 
     async def on_tab(self, interaction: discord.Interaction, panel: str) -> None:
-        if self._working:
-            await _note(interaction, _BUSY)
-            return
         if panel == self.panel and self.opened is None:
             await _defer(interaction)
             return
@@ -413,7 +421,7 @@ class LiveLine(_Queue, _Lists, _History, _Card):
     async def on_back(self, interaction: discord.Interaction) -> None:
         await self._turn(interaction, -1)
 
-    async def on_forward(self, interaction: discord.Interaction) -> None:
+    async def on_next(self, interaction: discord.Interaction) -> None:
         await self._turn(interaction, 1)
 
     async def on_close(self, interaction: discord.Interaction) -> None:
@@ -431,27 +439,14 @@ class LiveLine(_Queue, _Lists, _History, _Card):
 
     def _side(self) -> discord.ui.Button:
         button = self._side_button
-        button.index = None
         if self.panel == PLAYLISTS:
-            button.label = MARK_DELETE
-            button.method = "on_remove_ask"
-            button.disabled = self.opened is None
-            button.style = discord.ButtonStyle.secondary
-            return button
+            return _face(button, MARK_DELETE, "on_remove_ask", disabled=self.opened is None)
         if self.panel == QUEUE:
-            button.label = MARK_LINE
-            button.method = "on_queue_list"
-            button.disabled = not self._saved_lists()
-            button.style = discord.ButtonStyle.secondary
-            return button
+            return _face(button, MARK_LIST, "on_queue_list", disabled=not self._saved_lists())
         ready = bool(played(self.guild))
         if not ready:
             self._saving = False
-        button.label = MARK_SAVE
-        button.method = "on_save"
-        button.disabled = not ready
-        button.style = _lit(self._saving)
-        return button
+        return _face(button, MARK_SAVE, "on_save", disabled=not ready, on=self._saving)
 
     def _footer(
         self,
@@ -469,56 +464,33 @@ class LiveLine(_Queue, _Lists, _History, _Card):
         self._back.disabled = self.page <= 0
         self._next.disabled = self.page >= pages - 1
         box.add_item(_row(
-            self._back,
-            self._next,
-            self._wide(count),
-            self._narrow(count),
-            self._close,
-            id=62,
+            self._back, self._next, self._wide(count), self._narrow(count), self._close, id=62,
         ))
 
     def _wide(self, count: int) -> discord.ui.Button:
         button = self._wide_button
-        button.index = None
         if self.panel == QUEUE:
-            button.label = LABEL_ADJUST
-            button.method = "on_order"
-            button.disabled = count < 2
-            button.style = _lit(self._ordering)
-            return button
+            return _face(button, LABEL_ADJUST, "on_order", disabled=count < 2, on=self._ordering)
         if self.panel == HISTORY:
-            on = self._mine_id is not None
-            button.label = LABEL_YOUR
-            button.method = "on_mine"
-            button.disabled = not played(self.guild)
-            button.style = _lit(on)
-            return button
-        button.label = LABEL_NEW_LIST
-        button.method = "on_new"
-        button.disabled = False
-        button.style = discord.ButtonStyle.secondary
-        return button
+            return _face(
+                button, LABEL_YOUR, "on_mine",
+                disabled=not played(self.guild), on=self._mine_id is not None,
+            )
+        return _face(button, LABEL_NEW_LIST, "on_new")
 
     def _narrow(self, count: int) -> discord.ui.Button:
-        button = self._narrow_button
-        button.index = None
         if self.panel in (QUEUE, HISTORY):
-            button.label = LABEL_EMPTY
-            button.method = "on_empty"
-            button.disabled = count == 0
-            button.style = discord.ButtonStyle.secondary
-            return button
+            return _face(self._narrow_button, LABEL_EMPTY, "on_empty", disabled=count == 0)
         ready = self.opened is not None and count > 0
-        button.label = LABEL_REMOVE
-        button.method = "on_remove"
-        button.disabled = not ready
-        button.style = _lit(self._removing and ready)
-        return button
+        return _face(
+            self._narrow_button, LABEL_REMOVE, "on_remove",
+            disabled=not ready, on=self._removing and ready,
+        )
 
     def _page_line(self, pages: int, count: int, noun: str, duration: int | None) -> str:
         if self.panel == PLAYLISTS and self.opened is None:
             return _clock(f"{count} {_list_noun(count)}", duration)
-        line = _status(self.page + 1, pages, count, noun, duration)
+        line = _clock(f"Page {self.page + 1}/{pages}  |  {count} {noun}", duration)
         saved = self.opened
         if self.panel == PLAYLISTS and saved is not None and saved.saver_id is not None:
             return f"{line}  |  <@{saved.saver_id}>"
@@ -531,9 +503,6 @@ class LiveLine(_Queue, _Lists, _History, _Card):
         return start, min(count, start + PAGE), pages
 
     async def _turn(self, interaction: discord.Interaction, step: int) -> None:
-        if self._working:
-            await _note(interaction, _BUSY)
-            return
         self.page += step
         await self._show_songs(interaction)
 
@@ -550,10 +519,13 @@ class LiveLine(_Queue, _Lists, _History, _Card):
 
     async def _edit(self, interaction: discord.Interaction) -> None:
         async def edit() -> None:
-            if interaction.response.is_done():
-                await interaction.edit_original_response(view=self, allowed_mentions=_MENTIONS)
-            else:
-                await interaction.response.edit_message(view=self, allowed_mentions=_MENTIONS)
+            send = (
+                interaction.edit_original_response
+                if interaction.response.is_done()
+                else interaction.response.edit_message
+            )
+            await send(view=self, allowed_mentions=_MENTIONS)
+
         await self._send(edit)
 
     async def _push(self) -> None:

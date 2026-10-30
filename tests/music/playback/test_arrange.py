@@ -30,7 +30,12 @@ from music.playback import (
 from tests.music.support import _Player, _card_text, _named, _room, _waiting
 from tests.music.playlist.support import _line_up
 
-async def test_the_live_line_can_drop_a_song_or_start_another():
+async def test_the_live_line_drops_songs():
+    """The live line can drop a song or start another. Removing the last waiting song ends the playlist."""
+    await case_the_live_line_can_drop_a_song_or_start_another()
+    await case_removing_the_last_waiting_song_ends_the_playlist()
+
+async def case_the_live_line_can_drop_a_song_or_start_another():
     guild, member, player, tracks, note = await _line_up(9100, ["Alpha", "Beta"])
     try:
         assert note == "Playing Alpha."
@@ -72,7 +77,7 @@ async def test_the_live_line_can_drop_a_song_or_start_another():
     finally:
         await stop_track(guild)
 
-async def test_removing_the_last_waiting_song_ends_the_playlist():
+async def case_removing_the_last_waiting_song_ends_the_playlist():
     guild, member, player = _room(86)
     await stop_track(guild)
     tracks = [(_named(str(index)), "youtube") for index in range(3)]
@@ -138,7 +143,12 @@ async def test_history_remembers_the_last_fifty_played_songs():
     finally:
         await stop_track(guild)
 
-async def test_a_song_leaves_history_while_it_plays_again():
+async def test_a_song_on_the_line_leaves_history():
+    """Playing a song again, or waiting on the same recording, takes it out of history."""
+    await case_a_song_leaves_history_while_it_plays_again()
+    await case_a_shared_link_leaves_history_while_that_recording_waits()
+
+async def case_a_song_leaves_history_while_it_plays_again():
     guild = MagicMock()
     guild.id = 82
     guild.voice_client = None
@@ -180,6 +190,42 @@ async def test_a_song_leaves_history_while_it_plays_again():
         assert [row.title for row in played(guild)] == ["One Remastered", "Two", "Three"]
     finally:
         await stop_track(guild)
+
+async def case_a_shared_link_leaves_history_while_that_recording_waits():
+    """youtu.be and a youtube.com share are one recording, so history hides it."""
+    guild = MagicMock()
+    guild.id = 821
+    guild.voice_client = None
+    await stop_track(guild)
+    channel = MagicMock()
+    player = _Player(channel)
+    channel.connect = AsyncMock(return_value=player)
+
+    async def play(track):
+        player._track = track
+
+    player.play.side_effect = play
+    member = MagicMock()
+    member.id = 9
+    member.voice.channel = channel
+    first = _named("One", "Mac")
+    first.uri = "https://youtu.be/abc"
+    later = _named("Two", "Ada")
+    later.uri = "https://example.com/two"
+    again = _named("One Remastered", "Mac")
+    again.uri = "https://music.youtube.com/watch?v=abc&si=track"
+    try:
+        assert await queue_tracks(member, guild, [first, later]) == "Playing One."
+        guild.voice_client = player
+        assert await next_track(guild) is None
+        assert now_playing(guild).title == "Two"
+        assert [row.title for row in played(guild)] == ["One"]
+
+        assert await queue_tracks(member, guild, [again]) == "Added One Remastered."
+        assert played(guild) == []
+    finally:
+        await stop_track(guild)
+
 
 async def test_an_unplayed_queue_song_returns_to_its_history_spot():
     import music.playback as playback
@@ -255,7 +301,14 @@ async def test_an_unplayed_queue_song_returns_to_its_history_spot():
     finally:
         await stop_track(guild)
 
-async def test_a_long_playlist_starts_before_the_rest_open(monkeypatch):
+async def test_a_playlist_starts_and_keeps_every_song(monkeypatch):
+    """A long playlist starts before the rest open, and every song stays."""
+    with monkeypatch.context() as patch:
+        await case_a_long_playlist_starts_before_the_rest_open(patch)
+    with monkeypatch.context() as patch:
+        await case_playing_a_playlist_keeps_every_song(patch)
+
+async def case_a_long_playlist_starts_before_the_rest_open(monkeypatch):
     guild, member, player = _room(80)
     await stop_track(guild)
     release = asyncio.Event()
@@ -303,7 +356,7 @@ async def test_a_long_playlist_starts_before_the_rest_open(monkeypatch):
         await finish_saved(guild)
         await stop_track(guild)
 
-async def test_playing_a_playlist_keeps_every_song(monkeypatch):
+async def case_playing_a_playlist_keeps_every_song(monkeypatch):
     guild, member, player = _room(81)
     await stop_track(guild)
 
@@ -323,13 +376,63 @@ async def test_playing_a_playlist_keeps_every_song(monkeypatch):
         guild.voice_client = player
         await finish_saved(guild)
         assert now_playing(guild).title == "0"
-        assert _waiting(guild) == [str(index) for index in range(1, count)]
-        assert _stored(guild).later[-1].platform == "apple"
+        assert _waiting(guild) == [str(index) for index in range(1, QUEUE_SONGS + 1)]
+        assert skipped_songs(guild) is None
+        assert [song.track.title for song in _stored(guild).held] == [
+            str(index) for index in range(QUEUE_SONGS + 1, count)
+        ]
+        assert await next_track(guild) is None
+        assert skipped_songs(guild) is None
+        assert _waiting(guild)[-1] == str(QUEUE_SONGS + 1)
+        assert await queue_tracks(member, guild, [_named("Extra")]) == "The queue is full."
     finally:
         await finish_saved(guild)
         await stop_track(guild)
 
-async def test_stopping_drops_the_songs_still_opening(monkeypatch):
+async def test_a_saved_playlist_replaces_radio(monkeypatch):
+    """A playlist takes the station's place. Adding a song while radio is on still waits."""
+    guild, member, player = _room(8803)
+    await stop_track(guild)
+
+    async def open_one(_guild, song):
+        return (_named(song.title), song.platform), song.title, ""
+
+    monkeypatch.setattr("music.playback.open_one", open_one)
+    songs = [
+        SavedSong("One", "youtube", "https://example.com/one"),
+        SavedSong("Two", "youtube", "https://example.com/two"),
+    ]
+    try:
+        assert await queue_tracks(member, guild, [_named("Stay")]) == "Playing Stay."
+        guild.voice_client = player
+        assert await queue_tracks(member, guild, [_named("Queued")]) == "Added Queued."
+        held = _stored(guild)
+        assert held is not None
+        held.radio = True
+
+        assert await play_now(member, guild, _named("Echo"), "youtube") == "Added Echo."
+        assert now_playing(guild).title == "Stay"
+        assert held.radio is True
+
+        note = await play_saved(member, guild, songs, replace=True)
+        assert note == "Playing One."
+        await finish_saved(guild)
+        assert now_playing(guild).title == "One"
+        assert _stored(guild).radio is False
+        assert _waiting(guild) == ["Two"]
+    finally:
+        await finish_saved(guild)
+        await stop_track(guild)
+
+
+async def test_a_playlist_still_opening_can_be_stopped(monkeypatch):
+    """Stopping or emptying drops the songs that are still opening."""
+    with monkeypatch.context() as patch:
+        await case_stopping_drops_the_songs_still_opening(patch)
+    with monkeypatch.context() as patch:
+        await case_empty_cancels_a_playlist_still_opening(patch)
+
+async def case_stopping_drops_the_songs_still_opening(monkeypatch):
     guild, member, player = _room(82)
     await stop_track(guild)
     release = asyncio.Event()
@@ -357,7 +460,7 @@ async def test_stopping_drops_the_songs_still_opening(monkeypatch):
         await finish_saved(guild)
         await stop_track(guild)
 
-async def test_empty_cancels_a_playlist_still_opening(monkeypatch):
+async def case_empty_cancels_a_playlist_still_opening(monkeypatch):
     guild, member, player = _room(83)
     await stop_track(guild)
     release = asyncio.Event()
@@ -390,7 +493,7 @@ async def test_empty_cancels_a_playlist_still_opening(monkeypatch):
 
 async def test_a_finished_playlist_names_the_songs_it_skipped(monkeypatch, tmp_path):
     from guild import GuildConfig
-    from music.playlist.card import LiveLine
+    from music.playlist.card import PlaylistCard
 
     guild, member, player = _room(84)
     await stop_track(guild)
@@ -416,7 +519,7 @@ async def test_a_finished_playlist_names_the_songs_it_skipped(monkeypatch, tmp_p
         note = await asyncio.wait_for(play_saved(member, guild, songs, replace=False), timeout=2)
         assert note == "Playing One."
         guild.voice_client = player
-        view = LiveLine(guild, GuildConfig(tmp_path / "guild.json"))
+        view = PlaylistCard(guild, GuildConfig(tmp_path / "guild.json"))
         view.message = MagicMock()
         view.message.edit = AsyncMock()
         view.follow(view.message)

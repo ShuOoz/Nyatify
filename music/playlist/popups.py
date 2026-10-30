@@ -56,9 +56,14 @@ def means_yes(text: str) -> bool:
     return _same(text, "yes")
 
 
-def empty_hint(panel: str) -> str:
+def empty_hint(panel: str, *, yours: bool = False) -> str:
     """The line under the warning, in the style of GitHub's delete box."""
-    cleared = "every played song" if panel == HISTORY else "every waiting song"
+    if panel == HISTORY and yours:
+        cleared = "your played songs"
+    elif panel == HISTORY:
+        cleared = "every played song"
+    else:
+        cleared = "every waiting song"
     return f'This permanently clears {cleared}. Type "yes" to confirm'
 
 
@@ -71,11 +76,11 @@ class EmptyList(discord.ui.Modal):
         component=discord.ui.TextInput(placeholder="yes", max_length=16),
     )
 
-    def __init__(self, apply: _Apply, panel: str) -> None:
+    def __init__(self, apply: _Apply, panel: str, *, yours: bool = False) -> None:
         super().__init__(title="Empty")
         self._apply = apply
         self.panel = panel
-        self.query.description = empty_hint(panel)
+        self.query.description = empty_hint(panel, yours=yours)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if not means_yes(str(self.query.component)):

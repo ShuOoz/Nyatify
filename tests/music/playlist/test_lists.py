@@ -10,7 +10,7 @@ import discord
 from guild import GuildConfig
 from music.panel import LABEL_PLAYER, MARK_ADD, MARK_BACK, MARK_NEXT, MARK_SEARCH
 from music.playlist.card import (
-    LiveLine,
+    PlaylistCard,
     LABEL_EMPTY,
     LABEL_NEW_LIST,
     LABEL_REMOVE,
@@ -23,6 +23,7 @@ from music.playlist.card import (
     pick_text,
 )
 from music.lavalink import Found, Opened
+from music.playback import stop_track
 from music.archive import (
     SavedSong,
     create_playlist,
@@ -38,11 +39,12 @@ from music.source import platform_key
 from music.playlist.popups import remove_hint
 from music.playlist.lists import song_matches
 
-from tests.music.support import _named
+from tests.music.support import _named, _scene
 from tests.music.playlist.support import (
     _after_menu,
     _button,
     _gap_under_menu,
+    _line_up,
     _menu,
     _press,
     _sections,
@@ -85,12 +87,19 @@ def test_a_rough_name_still_finds_the_song():
     assert song_matches("REM", SavedSong("R.E.M.", "youtube", "https://example.com/r"))
     assert song_matches("rem", SavedSong("R.E.M. Singer", "youtube", "https://example.com/r"))
     assert song_matches("xy", SavedSong("Xylophone", "youtube", "https://example.com/x")) is False
+    night_drive = SavedSong("夜に駆ける", "netease", "https://example.com/y", "YOASOBI")
+    jasmine = SavedSong("七里香", "netease", "https://example.com/q", "周杰伦")
+    assert song_matches("夜に", night_drive)
+    assert song_matches("駆ける", night_drive)
+    assert song_matches("里香", jasmine)
+    assert song_matches("杰伦", jasmine)
+    assert song_matches("周", jasmine) is False
 
 async def test_new_playlist_asks_for_a_name_and_lists_it(tmp_path):
     store = GuildConfig(tmp_path / "guild.json")
     guild = MagicMock()
     guild.id = 15
-    view = LiveLine(guild, store)
+    view = PlaylistCard(guild, store)
     person = _press()
     person.user.id = 4
     await _button(view, PLAYLISTS).callback(person)
@@ -212,14 +221,35 @@ async def test_new_playlist_asks_for_a_name_and_lists_it(tmp_path):
     await _button(view, QUEUE).callback(blocked)
     assert _button(view, MARK_SEARCH).label == MARK_SEARCH
 
-async def test_a_pick_follows_the_name_when_a_list_is_removed(tmp_path):
+async def test_an_open_list(tmp_path):
+    """The pick follows the open list. It can drop a song and then itself. Removing stays on that list and asks for the voice channel."""
+    for index, case in enumerate((
+        case_the_pick_follows_the_open_list,
+        case_an_open_list_drops_a_song_and_then_itself,
+        case_removing_stays_on_the_list_the_box_opened,
+        case_removing_a_playlist_asks_for_the_voice_channel,
+    )):
+        spot = tmp_path / f"open{index}"
+        spot.mkdir()
+        await _scene(case, spot)
+
+async def case_the_pick_follows_the_open_list(tmp_path):
+    """The pick follows the name when a list is removed, and a list named pick still opens."""
+    spot = tmp_path / "part0"
+    spot.mkdir()
+    await case_a_pick_follows_the_name_when_a_list_is_removed(spot)
+    spot = tmp_path / "part1"
+    spot.mkdir()
+    await case_a_list_named_pick_opens(spot)
+
+async def case_a_pick_follows_the_name_when_a_list_is_removed(tmp_path):
     store = GuildConfig(tmp_path / "guild.json")
     guild = MagicMock()
     guild.id = 15
     create_playlist(store, guild.id, "Evening", 4)
     create_playlist(store, guild.id, "Night", 4)
     assert isinstance(delete_playlist(store, guild.id, "Evening"), SavedList)
-    view = LiveLine(guild, store)
+    view = PlaylistCard(guild, store)
     press = _press()
     await _button(view, PLAYLISTS).callback(press)
     menu = _menu(view)
@@ -234,13 +264,13 @@ async def test_a_pick_follows_the_name_when_a_list_is_removed(tmp_path):
     assert view.opened is not None
     assert view.opened.name == "Night"
 
-async def test_a_list_named_pick_opens(tmp_path):
+async def case_a_list_named_pick_opens(tmp_path):
     store = GuildConfig(tmp_path / "guild.json")
     guild = MagicMock()
     guild.id = 15
     assert isinstance(create_playlist(store, guild.id, "pick", 4), SavedList)
     assert isinstance(create_playlist(store, guild.id, "Night", 4), SavedList)
-    view = LiveLine(guild, store)
+    view = PlaylistCard(guild, store)
     press = _press()
     await _button(view, PLAYLISTS).callback(press)
     menu = _menu(view)
@@ -259,7 +289,7 @@ async def test_a_list_named_pick_opens(tmp_path):
     assert view.opened is None
     assert "2 playlists" in _text(view)
 
-async def test_an_open_list_drops_a_song_and_then_itself(tmp_path):
+async def case_an_open_list_drops_a_song_and_then_itself(tmp_path):
     store = GuildConfig(tmp_path / "guild.json")
     guild = MagicMock()
     guild.id = 15
@@ -274,7 +304,7 @@ async def test_an_open_list_drops_a_song_and_then_itself(tmp_path):
         ),
     )
     assert isinstance(created, SavedList)
-    view = LiveLine(guild, store)
+    view = PlaylistCard(guild, store)
     view.message = MagicMock()
     view.message.edit = AsyncMock()
     press = _press()
@@ -306,9 +336,10 @@ async def test_an_open_list_drops_a_song_and_then_itself(tmp_path):
     modal = press.response.send_modal.await_args.args[0]
     assert modal.title == "Remove"
     assert modal.query.description == remove_hint()
-    modal.query.component._value = "no"
+    modal.query.component._value = "yes remove it"
     refused = _press()
     await modal.on_submit(refused)
+    assert len(modal.query.description) <= 100
     assert [item.title for item in find_playlist(store, guild.id, "Evening").songs] == ["Two"]
     modal.query.component._value = "yes, remove it"
     await modal.on_submit(press)
@@ -318,7 +349,47 @@ async def test_an_open_list_drops_a_song_and_then_itself(tmp_path):
     assert _button(view, MARK_DELETE).disabled is True
     assert _button(view, LABEL_REMOVE).disabled is True
 
-async def test_a_stale_delete_reloads_the_open_list(tmp_path):
+async def case_removing_stays_on_the_list_the_box_opened(tmp_path):
+    """Confirm removes the playlist the box was opened on. A stale delete reloads the open list. A song saved at the top is not what remove deletes."""
+    for name, case in (
+        ("confirm", case_confirm_removes_the_playlist_the_box_was_opened_on),
+        ("stale", case_a_stale_delete_reloads_the_open_list),
+        ("top", case_a_song_saved_at_the_top_is_not_what_remove_deletes),
+    ):
+        spot = tmp_path / name
+        spot.mkdir()
+        await case(spot)
+
+async def case_confirm_removes_the_playlist_the_box_was_opened_on(tmp_path):
+    store = GuildConfig(tmp_path / "guild.json")
+    guild = MagicMock()
+    guild.id = 16
+    assert isinstance(create_playlist(store, guild.id, "Evening", 4), SavedList)
+    assert isinstance(create_playlist(store, guild.id, "Night", 4), SavedList)
+    view = PlaylistCard(guild, store)
+    view.message = MagicMock()
+    view.message.edit = AsyncMock()
+    try:
+        press = _press()
+        await _button(view, PLAYLISTS).callback(press)
+        menu = _menu(view)
+        menu._values = ["Evening"]
+        await menu.callback(press)
+        await _button(view, MARK_DELETE).callback(press)
+        modal = press.response.send_modal.await_args.args[0]
+        menu = _menu(view)
+        menu._values = ["Night"]
+        await menu.callback(press)
+        modal.query.component._value = "yes, remove it"
+        await modal.on_submit(press)
+        assert [item.name for item in list_playlists(store, guild.id)] == ["Night"]
+        assert view.opened is not None
+        assert view.opened.name == "Night"
+        assert "Night" in _text(view)
+    finally:
+        view.stop()
+
+async def case_a_stale_delete_reloads_the_open_list(tmp_path):
     store = GuildConfig(tmp_path / "guild.json")
     guild = MagicMock()
     guild.id = 16
@@ -330,7 +401,7 @@ async def test_a_stale_delete_reloads_the_open_list(tmp_path):
         ),
     )
     assert isinstance(created, SavedList)
-    view = LiveLine(guild, store, opened=created)
+    view = PlaylistCard(guild, store, opened=created)
     view.message = MagicMock()
     view.message.edit = AsyncMock()
     try:
@@ -354,7 +425,51 @@ async def test_a_stale_delete_reloads_the_open_list(tmp_path):
     finally:
         view.stop()
 
-async def test_a_playlist_link_imports_the_name_and_the_first_songs(monkeypatch, tmp_path):
+async def case_a_song_saved_at_the_top_is_not_what_remove_deletes(tmp_path):
+    store = GuildConfig(tmp_path / "guild.json")
+    guild = MagicMock()
+    guild.id = 16
+    created = create_playlist(
+        store, guild.id, "Evening", 4,
+        (SavedSong("One", "youtube", "https://example.com/one"),),
+    )
+    assert isinstance(created, SavedList)
+    view = PlaylistCard(guild, store, opened=created)
+    view.message = MagicMock()
+    view.message.edit = AsyncMock()
+    try:
+        view.to_components()
+        await _button(view, LABEL_REMOVE).callback(_press())
+        save_song(
+            store, guild.id, "Evening",
+            SavedSong("Extra", "youtube", "https://example.com/extra"),
+            4,
+        )
+        press = _press()
+        await _button(view, MARK_MINUS, 0).callback(press)
+        assert "That song is gone" in press.send.await_args.args[0]
+        assert [song.title for song in find_playlist(store, guild.id, "Evening").songs] == [
+            "Extra", "One",
+        ]
+        assert "Extra" in _text(view)
+        assert "One" in _text(view)
+    finally:
+        view.stop()
+
+async def test_importing_a_playlist(monkeypatch, tmp_path):
+    """A link, an album, a watch list, a short link, duplicates, a missing artist, and an import that cannot finish."""
+    for index, case in enumerate((
+        case_a_playlist_link_imports_the_name_and_the_first_songs,
+        case_create_imports_an_album_a_watch_list_and_a_short_link,
+        case_import_skips_duplicate_links_names_a_blank_list_and_counts_the_rest,
+        case_an_imported_list_reads_a_missing_artist,
+        case_an_import_that_cannot_finish,
+    )):
+        spot = tmp_path / f"import{index}"
+        spot.mkdir()
+        await _scene(case, spot, monkeypatch=monkeypatch)
+
+async def case_a_playlist_link_imports_the_name_and_the_first_songs(monkeypatch, tmp_path):
     calls = []
 
     async def found(_guild, query, platform="youtube", mode=None):
@@ -373,11 +488,11 @@ async def test_a_playlist_link_imports_the_name_and_the_first_songs(monkeypatch,
         blank.uri = None
         return Found(query, key, [blank, *tracks], True, f"  {key} nights ")
 
-    monkeypatch.setattr("music.playlist.find_songs", found)
+    monkeypatch.setattr("music.playlist.lists.find_songs", found)
     store = GuildConfig(tmp_path / "guild.json")
     guild = MagicMock()
     guild.id = 15
-    view = LiveLine(guild, store)
+    view = PlaylistCard(guild, store)
     press = _press()
     press.user.id = 4
     await _button(view, PLAYLISTS).callback(press)
@@ -431,9 +546,12 @@ async def test_a_playlist_link_imports_the_name_and_the_first_songs(monkeypatch,
     assert "Chet Baker · 3:02" in _text(view)
     assert "NetEase" not in _text(view)
     assert "Page 1/20  |  100 songs  |  5:03:20  |  <@4>" in _text(view)
-    assert calls == links
+    assert calls == [
+        *links[:-1],
+        "https://music.163.com/playlist?id=1",
+    ]
 
-async def test_create_imports_an_album_a_watch_list_and_a_short_link(monkeypatch, tmp_path):
+async def case_create_imports_an_album_a_watch_list_and_a_short_link(monkeypatch, tmp_path):
     calls = []
 
     async def found(_guild, query, platform="youtube", mode=None):
@@ -455,12 +573,12 @@ async def test_create_imports_an_album_a_watch_list_and_a_short_link(monkeypatch
         assert url == "https://spotify.link/abc"
         return "https://open.spotify.com/playlist/from-share"
 
-    monkeypatch.setattr("music.playlist.find_songs", found)
-    monkeypatch.setattr("music.playlist.follow_redirect", follow)
+    monkeypatch.setattr("music.playlist.lists.find_songs", found)
+    monkeypatch.setattr("music.playlist.lists.follow_redirect", follow)
     store = GuildConfig(tmp_path / "guild.json")
     guild = MagicMock()
     guild.id = 15
-    view = LiveLine(guild, store)
+    view = PlaylistCard(guild, store)
     press = _press()
     press.user.id = 4
     await _button(view, PLAYLISTS).callback(press)
@@ -487,7 +605,7 @@ async def test_create_imports_an_album_a_watch_list_and_a_short_link(monkeypatch
         "Shared",
     ]
 
-async def test_import_skips_duplicate_links_names_a_blank_list_and_counts_the_rest(monkeypatch, tmp_path):
+async def case_import_skips_duplicate_links_names_a_blank_list_and_counts_the_rest(monkeypatch, tmp_path):
     async def found(_guild, query, platform="youtube", mode=None):
         if "list=dupes" in query:
             tracks = []
@@ -522,11 +640,11 @@ async def test_import_skips_duplicate_links_names_a_blank_list_and_counts_the_re
         track.length = 1_000
         return Found(query, "youtube", [track], True, "   ")
 
-    monkeypatch.setattr("music.playlist.find_songs", found)
+    monkeypatch.setattr("music.playlist.lists.find_songs", found)
     store = GuildConfig(tmp_path / "guild.json")
     guild = MagicMock()
     guild.id = 15
-    view = LiveLine(guild, store)
+    view = PlaylistCard(guild, store)
     press = _press()
     press.user.id = 4
     await _button(view, PLAYLISTS).callback(press)
@@ -561,7 +679,7 @@ async def test_import_skips_duplicate_links_names_a_blank_list_and_counts_the_re
         "Playlist 2",
     ]
 
-async def test_an_imported_list_reads_a_missing_artist(monkeypatch, tmp_path):
+async def case_an_imported_list_reads_a_missing_artist(monkeypatch, tmp_path):
     async def found(_guild, query, platform="youtube", mode=None):
         if mode == "track":
             track = MagicMock()
@@ -575,11 +693,11 @@ async def test_an_imported_list_reads_a_missing_artist(monkeypatch, tmp_path):
         track.length = 0
         return Found(query, "youtube", [track], True, "Evening")
 
-    monkeypatch.setattr("music.playlist.find_songs", found)
+    monkeypatch.setattr("music.playlist.lists.find_songs", found)
     store = GuildConfig(tmp_path / "guild.json")
     guild = MagicMock()
     guild.id = 15
-    view = LiveLine(guild, store)
+    view = PlaylistCard(guild, store)
     press = _press()
     press.user.id = 4
     await _button(view, PLAYLISTS).callback(press)
@@ -597,15 +715,95 @@ async def test_an_imported_list_reads_a_missing_artist(monkeypatch, tmp_path):
     assert "Chet Baker · 3:02" in _text(view)
     assert "Page 1/1  |  1 song  |  3:02  |  <@4>" in _text(view)
 
-async def test_a_failed_import_says_the_playlist_was_not_created(monkeypatch, tmp_path):
-    async def found(_guild, query, platform="youtube", mode=None):
-        raise RuntimeError("down")
+async def case_removing_a_playlist_asks_for_the_voice_channel(tmp_path):
+    guild, member, _player, _tracks, note = await _line_up(9422, ["Alpha"])
+    store = GuildConfig(tmp_path / "guild.json")
+    created = create_playlist(
+        store, guild.id, "Evening", member.id,
+        (
+            SavedSong("One", "youtube", "https://example.com/one"),
+            SavedSong("Two", "youtube", "https://example.com/two"),
+        ),
+    )
+    assert isinstance(created, SavedList)
+    view = PlaylistCard(guild, store, opened=created)
+    view.message = MagicMock()
+    view.message.edit = AsyncMock()
+    try:
+        assert note == "Playing Alpha."
+        view.to_components()
+        outsider = MagicMock()
+        outsider.voice.channel = MagicMock()
+        outsider.voice.channel.id = 1
+        refused = _press(outsider)
+        await _button(view, MARK_DELETE).callback(refused)
+        assert "Join the voice channel first" in refused.send.await_args.args[0]
+        refused.response.send_modal.assert_not_awaited()
 
-    monkeypatch.setattr("music.playlist.find_songs", found)
+        await _button(view, LABEL_REMOVE).callback(_press(member))
+        song = _press(outsider)
+        await _button(view, MARK_MINUS, 0).callback(song)
+        assert "Join the voice channel first" in song.send.await_args.args[0]
+        assert [item.title for item in find_playlist(store, guild.id, "Evening").songs] == [
+            "One", "Two",
+        ]
+
+        await _button(view, MARK_MINUS, 0).callback(_press(member))
+        assert [item.title for item in find_playlist(store, guild.id, "Evening").songs] == ["Two"]
+    finally:
+        view.stop()
+        await stop_track(guild)
+
+async def case_an_import_that_cannot_finish(monkeypatch, tmp_path):
+    """A taken name keeps the songs. A failed import says the playlist was not created."""
+    spot = tmp_path / "part0"
+    spot.mkdir()
+    with monkeypatch.context() as patch:
+        await case_an_import_keeps_its_songs_when_the_name_is_taken(patch, spot)
+    spot = tmp_path / "part1"
+    spot.mkdir()
+    with monkeypatch.context() as patch:
+        await case_a_failed_import_says_the_playlist_was_not_created(patch, spot)
+
+async def case_an_import_keeps_its_songs_when_the_name_is_taken(monkeypatch, tmp_path):
+    async def found(_guild, query, platform="youtube", mode=None):
+        track = MagicMock()
+        track.title = "Kept"
+        track.uri = "https://example.com/kept"
+        track.author = "A"
+        track.length = 1_000
+        return Found(query, "youtube", [track], True, "Evening")
+
+    monkeypatch.setattr("music.playlist.lists.find_songs", found)
     store = GuildConfig(tmp_path / "guild.json")
     guild = MagicMock()
     guild.id = 15
-    view = LiveLine(guild, store)
+    assert isinstance(create_playlist(store, guild.id, "Evening", 4), SavedList)
+    assert isinstance(create_playlist(store, guild.id, "Evening 2", 4), SavedList)
+    view = PlaylistCard(guild, store)
+    press = _press()
+    press.user.id = 4
+    await _button(view, PLAYLISTS).callback(press)
+    await _button(view, LABEL_NEW_LIST).callback(press)
+    modal = press.response.send_modal.await_args.args[0]
+    modal.query.component._value = "https://www.youtube.com/playlist?list=PL1"
+    submit = _press()
+    submit.user.id = 4
+    await modal.on_submit(submit)
+    saved = find_playlist(store, guild.id, "Evening 3")
+    assert saved is not None
+    assert [song.title for song in saved.songs] == ["Kept"]
+    assert [song.title for song in find_playlist(store, guild.id, "Evening").songs] == []
+
+async def case_a_failed_import_says_the_playlist_was_not_created(monkeypatch, tmp_path):
+    async def found(_guild, query, platform="youtube", mode=None):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr("music.playlist.lists.find_songs", found)
+    store = GuildConfig(tmp_path / "guild.json")
+    guild = MagicMock()
+    guild.id = 15
+    view = PlaylistCard(guild, store)
     press = _press()
     press.user.id = 4
     await _button(view, PLAYLISTS).callback(press)
@@ -620,7 +818,18 @@ async def test_a_failed_import_says_the_playlist_was_not_created(monkeypatch, tm
     assert "starting the song" not in note
     assert list_playlists(store, guild.id) == []
 
-async def test_an_open_list_reads_the_artist_once(monkeypatch, tmp_path):
+async def test_artists_are_read_once(monkeypatch, tmp_path):
+    """An open list reads each artist once. A bare song is filled once. A list that changes during the read stays as it was."""
+    for index, case in enumerate((
+        case_an_open_list_reads_the_artist_once,
+        case_a_bare_song_is_filled_once,
+        case_a_list_changing_while_artists_are_read,
+    )):
+        spot = tmp_path / f"read{index}"
+        spot.mkdir()
+        await _scene(case, spot, monkeypatch=monkeypatch)
+
+async def case_an_open_list_reads_the_artist_once(monkeypatch, tmp_path):
     store = GuildConfig(tmp_path / "guild.json")
     guild = MagicMock()
     guild.id = 15
@@ -656,8 +865,8 @@ async def test_an_open_list_reads_the_artist_once(monkeypatch, tmp_path):
         finally:
             current -= 1
 
-    monkeypatch.setattr("music.playlist.find_songs", found)
-    view = LiveLine(guild, store)
+    monkeypatch.setattr("music.playlist.lists.find_songs", found)
+    view = PlaylistCard(guild, store)
     press = _press()
     await _button(view, PLAYLISTS).callback(press)
     menu = _menu(view)
@@ -688,7 +897,22 @@ async def test_an_open_list_reads_the_artist_once(monkeypatch, tmp_path):
     await _button(view, PLAYLISTS).callback(press)
     assert "1 playlist  |  16:10" in _text(view)
 
-async def test_a_page_turn_does_not_reread_a_song_that_stayed_bare(monkeypatch, tmp_path):
+async def case_a_bare_song_is_filled_once(monkeypatch, tmp_path):
+    """A page turn does not reread a bare song. A missing artist or length is filled, including on the next list."""
+    spot = tmp_path / "part0"
+    spot.mkdir()
+    with monkeypatch.context() as patch:
+        await case_a_page_turn_does_not_reread_a_song_that_stayed_bare(patch, spot)
+    spot = tmp_path / "part1"
+    spot.mkdir()
+    with monkeypatch.context() as patch:
+        await case_a_song_missing_only_the_artist_or_the_length_is_filled(patch, spot)
+    spot = tmp_path / "part2"
+    spot.mkdir()
+    with monkeypatch.context() as patch:
+        await case_the_same_bare_song_is_filled_on_the_next_list(patch, spot)
+
+async def case_a_page_turn_does_not_reread_a_song_that_stayed_bare(monkeypatch, tmp_path):
     store = GuildConfig(tmp_path / "guild.json")
     guild = MagicMock()
     guild.id = 15
@@ -714,8 +938,8 @@ async def test_a_page_turn_does_not_reread_a_song_that_stayed_bare(monkeypatch, 
         track.length = 0
         return Found(query, "youtube", [track], True)
 
-    monkeypatch.setattr("music.playlist.find_songs", found)
-    view = LiveLine(guild, store)
+    monkeypatch.setattr("music.playlist.lists.find_songs", found)
+    view = PlaylistCard(guild, store)
     press = _press()
     await _button(view, PLAYLISTS).callback(press)
     menu = _menu(view)
@@ -726,7 +950,7 @@ async def test_a_page_turn_does_not_reread_a_song_that_stayed_bare(monkeypatch, 
     await _button(view, MARK_BACK).callback(press)
     assert sorted(calls) == [f"https://example.com/{index}" for index in range(6)]
 
-    again = LiveLine(guild, store)
+    again = PlaylistCard(guild, store)
     fresh = _press()
     await _button(again, PLAYLISTS).callback(fresh)
     menu = _menu(again)
@@ -734,7 +958,7 @@ async def test_a_page_turn_does_not_reread_a_song_that_stayed_bare(monkeypatch, 
     await menu.callback(fresh)
     assert len(calls) == 12
 
-async def test_a_song_missing_only_the_artist_or_the_length_is_filled(monkeypatch, tmp_path):
+async def case_a_song_missing_only_the_artist_or_the_length_is_filled(monkeypatch, tmp_path):
     store = GuildConfig(tmp_path / "guild.json")
     guild = MagicMock()
     guild.id = 15
@@ -758,8 +982,8 @@ async def test_a_song_missing_only_the_artist_or_the_length_is_filled(monkeypatc
         track.length = 182_000 if query.endswith("named") else 0
         return Found(query, "apple", [track], True)
 
-    monkeypatch.setattr("music.playlist.find_songs", found)
-    view = LiveLine(guild, store)
+    monkeypatch.setattr("music.playlist.lists.find_songs", found)
+    view = PlaylistCard(guild, store)
     press = _press()
     await _button(view, PLAYLISTS).callback(press)
     menu = _menu(view)
@@ -775,7 +999,7 @@ async def test_a_song_missing_only_the_artist_or_the_length_is_filled(monkeypatc
     assert "Chet Baker · 1:00" in _text(view)
     assert "Page 1/1  |  2 songs  |  4:02  |  <@4>" in _text(view)
 
-async def test_the_same_bare_song_is_filled_on_the_next_list(monkeypatch, tmp_path):
+async def case_the_same_bare_song_is_filled_on_the_next_list(monkeypatch, tmp_path):
     store = GuildConfig(tmp_path / "guild.json")
     guild = MagicMock()
     guild.id = 15
@@ -791,8 +1015,8 @@ async def test_the_same_bare_song_is_filled_on_the_next_list(monkeypatch, tmp_pa
         track.length = 182_000
         return Found(query, "youtube", [track], True)
 
-    monkeypatch.setattr("music.playlist.find_songs", found)
-    view = LiveLine(guild, store)
+    monkeypatch.setattr("music.playlist.lists.find_songs", found)
+    view = PlaylistCard(guild, store)
     press = _press()
     await _button(view, PLAYLISTS).callback(press)
     menu = _menu(view)
@@ -811,7 +1035,18 @@ async def test_the_same_bare_song_is_filled_on_the_next_list(monkeypatch, tmp_pa
     assert [(item.author, item.length) for item in morning.songs] == [("Chet Baker", 182_000)]
     assert "Chet Baker · 3:02" in _text(view)
 
-async def test_a_song_saved_while_artists_are_read_stays(monkeypatch, tmp_path):
+async def case_a_list_changing_while_artists_are_read(monkeypatch, tmp_path):
+    """A song saved while artists are read stays. A list removed while they are read stays gone."""
+    spot = tmp_path / "part0"
+    spot.mkdir()
+    with monkeypatch.context() as patch:
+        await case_a_song_saved_while_artists_are_read_stays(patch, spot)
+    spot = tmp_path / "part1"
+    spot.mkdir()
+    with monkeypatch.context() as patch:
+        await case_a_list_removed_while_artists_are_read_stays_gone(patch, spot)
+
+async def case_a_song_saved_while_artists_are_read_stays(monkeypatch, tmp_path):
     store = GuildConfig(tmp_path / "guild.json")
     guild = MagicMock()
     guild.id = 15
@@ -837,8 +1072,8 @@ async def test_a_song_saved_while_artists_are_read_stays(monkeypatch, tmp_path):
         track.length = 182_000
         return Found(query, "youtube", [track], True)
 
-    monkeypatch.setattr("music.playlist.find_songs", found)
-    view = LiveLine(guild, store)
+    monkeypatch.setattr("music.playlist.lists.find_songs", found)
+    view = PlaylistCard(guild, store)
     press = _press()
     await _button(view, PLAYLISTS).callback(press)
     menu = _menu(view)
@@ -852,7 +1087,7 @@ async def test_a_song_saved_while_artists_are_read_stays(monkeypatch, tmp_path):
     assert "Extra" in _text(view)
     assert "Chet Baker · 3:02" in _text(view)
 
-async def test_a_list_removed_while_artists_are_read_stays_gone(monkeypatch, tmp_path):
+async def case_a_list_removed_while_artists_are_read_stays_gone(monkeypatch, tmp_path):
     store = GuildConfig(tmp_path / "guild.json")
     guild = MagicMock()
     guild.id = 15
@@ -872,8 +1107,8 @@ async def test_a_list_removed_while_artists_are_read_stays_gone(monkeypatch, tmp
         track.length = 182_000
         return Found(query, "youtube", [track], True)
 
-    monkeypatch.setattr("music.playlist.find_songs", found)
-    view = LiveLine(guild, store)
+    monkeypatch.setattr("music.playlist.lists.find_songs", found)
+    view = PlaylistCard(guild, store)
     press = _press()
     await _button(view, PLAYLISTS).callback(press)
     menu = _menu(view)
@@ -898,7 +1133,7 @@ async def test_search_in_a_playlist_narrows_the_songs_or_leaves_them(tmp_path):
         ),
     )
     assert isinstance(created, SavedList)
-    view = LiveLine(guild, store, opened=created)
+    view = PlaylistCard(guild, store, opened=created)
     view.to_components()
     assert "Slow Down" in _text(view)
     assert "Long Night" in _text(view)
@@ -957,8 +1192,8 @@ async def test_a_saved_song_plays_on_its_own(monkeypatch):
     async def open_all(_guild, songs):
         return Opened([(_named(song.title), song.platform) for song in songs], [])
 
-    monkeypatch.setattr("music.playlist.open_recordings", open_all)
-    view = LiveLine(MagicMock(), MagicMock(), opened=saved, on_playing=started)
+    monkeypatch.setattr("music.playlist.lists.open_recordings", open_all)
+    view = PlaylistCard(MagicMock(), MagicMock(), opened=saved, on_playing=started)
     view.to_components()
     text = _text(view)
     assert "**1\\.** One" in text
@@ -972,13 +1207,14 @@ async def test_a_saved_song_plays_on_its_own(monkeypatch):
 
     heard = []
 
-    async def now(_member, _guild, track, platform):
+    async def queue(_member, _guild, tracks, platform="youtube", **_kwargs):
+        track = tracks[0]
         if track.title == "One":
             return "Join a voice channel first."
         heard.append((track.title, platform))
-        return f"Playing {track.title}."
+        return f"Added {track.title}."
 
-    monkeypatch.setattr("music.playlist.play_now", now)
+    monkeypatch.setattr("music.playlist.lists.queue_tracks", queue)
     missed = _press()
     await _button(view, MARK_ADD, 0).callback(missed)
     missed.delete_original_response.assert_not_awaited()
@@ -990,5 +1226,44 @@ async def test_a_saved_song_plays_on_its_own(monkeypatch):
     await _button(view, MARK_ADD, 1).callback(press)
     assert heard == [("Two", "spotify")]
     press.delete_original_response.assert_not_awaited()
-    started.assert_awaited_once()
+    started.assert_not_awaited()
+    assert "Two" in _text(view)
     assert view.is_finished() is False
+
+async def test_a_paused_song_does_not_pull_a_saved_song_into_voice(monkeypatch):
+    """Plus on a saved song stays out of voice while a paused song is still current."""
+    saved = SavedList(
+        "Evening",
+        17,
+        (SavedSong("After", "youtube", "https://example.com/after", "A", 180_000),),
+    )
+
+    async def open_all(_guild, songs):
+        return Opened([(_named(song.title), song.platform) for song in songs], [])
+
+    warmed = MagicMock()
+    left = AsyncMock()
+    monkeypatch.setattr("music.playlist.lists.open_recordings", open_all)
+    monkeypatch.setattr("music.playlist.lists.paused_away", lambda guild: True)
+    monkeypatch.setattr("music.playlist.lists.warm_voice", warmed)
+    monkeypatch.setattr("music.playlist.lists.leave_if_idle", left)
+    monkeypatch.setattr(
+        "music.playlist.lists.queue_tracks",
+        AsyncMock(return_value="Added After. I Ain't Worried is still paused."),
+    )
+    view = PlaylistCard(MagicMock(), MagicMock(), opened=saved)
+    press = _press()
+    press.guild.voice_client = None
+    await _button(view, MARK_ADD, 0).callback(press)
+    warmed.assert_not_called()
+    left.assert_not_called()
+
+    warmed.reset_mock()
+    left.reset_mock()
+    monkeypatch.setattr("music.playlist.lists.paused_away", lambda guild: False)
+    monkeypatch.setattr("music.playlist.lists.queue_tracks", AsyncMock(return_value="Playing After."))
+    fresh = _press()
+    fresh.guild.voice_client = None
+    await _button(view, MARK_ADD, 0).callback(fresh)
+    warmed.assert_called_once()
+    left.assert_called_once()

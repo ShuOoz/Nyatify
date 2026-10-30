@@ -11,7 +11,7 @@ from guild import GuildConfig
 from music.panel import LABEL_PLAYER, MARK_ADD, MARK_BACK, MARK_CLOSE, MARK_NEXT
 from music.player.card import MusicPlayer
 from music.playlist.card import (
-    LiveLine,
+    PlaylistCard,
     HISTORY,
     LABEL_EMPTY,
     LABEL_YOUR,
@@ -23,14 +23,24 @@ from music.archive import create_playlist, find_playlist
 from music.playback import next_track, played, queue_tracks, queued, stop_track
 
 from tests.music.support import _ask, _defer_marks_done, _named
-from tests.music.playlist.support import _answer_empty, _button, _line_up, _press, _text
+from music.playlist.popups import empty_hint
+from tests.music.playlist.support import _answer_empty, _button, _line_up, _open_empty, _press, _text
 
-async def test_replay_uses_the_song_the_button_showed(tmp_path):
+async def test_played_songs_can_be_replayed_or_cleared(tmp_path):
+    """Replay uses the song the button showed. Sweep drops every played song."""
+    spot = tmp_path / "part0"
+    spot.mkdir()
+    await case_replay_uses_the_song_the_button_showed(spot)
+    spot = tmp_path / "part1"
+    spot.mkdir()
+    await case_sweep_drops_every_played_song(spot)
+
+async def case_replay_uses_the_song_the_button_showed(tmp_path):
     guild, member, _player, _tracks, note = await _line_up(
         9311, ["Alpha", "Beta", "Gamma", "Delta"],
     )
     store = GuildConfig(tmp_path / "guild.json")
-    view = LiveLine(guild, store)
+    view = PlaylistCard(guild, store)
     try:
         assert note == "Playing Alpha."
         assert await next_track(guild) is None
@@ -72,12 +82,11 @@ async def test_an_empty_queue_opens_the_player_when_a_song_starts(monkeypatch):
         interaction = _ask()
         interaction.guild = guild
         interaction.user = member
-        interaction.response.send_message = AsyncMock()
         message = MagicMock()
         message.edit = AsyncMock()
         interaction.original_response = AsyncMock(return_value=message)
         await cog.playlist.callback(cog, interaction)
-        view = interaction.response.send_message.await_args.kwargs["view"]
+        view = interaction.edit_original_response.await_args.kwargs["view"]
         await _button(view, HISTORY).callback(_press(member))
 
         press = _press(member)
@@ -123,7 +132,7 @@ async def test_mine_shows_only_that_persons_songs(tmp_path):
         assert await next_track(guild) is None
         assert [row.title for row in played(guild)] == ["Gamma", "Beta", "Alpha"]
 
-        view = LiveLine(guild, store)
+        view = PlaylistCard(guild, store)
         view.message = MagicMock()
         view.message.edit = AsyncMock()
         await _button(view, HISTORY).callback(_press(member))
@@ -155,6 +164,15 @@ async def test_mine_shows_only_that_persons_songs(tmp_path):
         assert "Alpha" in text
         assert "Gamma" not in text
 
+        modal = await _open_empty(view, _press(member))
+        assert modal.query.description == empty_hint(HISTORY, yours=True)
+        assert len(modal.query.description) <= 100
+        modal.query.component._value = "yes"
+        await modal.on_submit(_press(member))
+        assert [row.title for row in played(guild)] == ["Gamma"]
+        assert "Gamma" not in _text(view)
+        assert "-# Nothing of yours yet" in _text(view)
+
         lonely = MagicMock()
         lonely.id = 1
         await _button(view, LABEL_YOUR).callback(_press(lonely))
@@ -162,6 +180,11 @@ async def test_mine_shows_only_that_persons_songs(tmp_path):
         assert "Alpha" not in _text(view)
         assert _button(view, LABEL_YOUR).style == discord.ButtonStyle.primary
 
+        skipped = _press(member)
+        await _button(view, LABEL_EMPTY).callback(skipped)
+        skipped.response.send_modal.assert_not_awaited()
+        assert [row.title for row in played(guild)] == ["Gamma"]
+        await _button(view, LABEL_YOUR).callback(_press(lonely))
         await _answer_empty(view, _press(member), "yes")
         assert played(guild) == []
         assert "-# Nothing has played yet" in _text(view)
@@ -171,7 +194,7 @@ async def test_mine_shows_only_that_persons_songs(tmp_path):
     finally:
         await stop_track(guild)
 
-async def test_sweep_drops_every_played_song(tmp_path):
+async def case_sweep_drops_every_played_song(tmp_path):
     guild, _member, player, _tracks, note = await _line_up(9301, ["Alpha", "Beta", "Gamma"])
     store = GuildConfig(tmp_path / "guild.json")
     try:
@@ -180,7 +203,7 @@ async def test_sweep_drops_every_played_song(tmp_path):
         assert [row.title for row in played(guild)] == ["Alpha"]
         assert [row.title for row in queued(guild)] == ["Beta", "Gamma"]
 
-        view = LiveLine(guild, store)
+        view = PlaylistCard(guild, store)
         view.message = MagicMock()
         view.message.edit = AsyncMock()
         opened = _press()
@@ -217,7 +240,7 @@ async def test_the_star_saves_a_played_song(tmp_path):
         assert note == "Playing Alpha."
         assert await next_track(guild) is None
         assert [row.title for row in played(guild)] == ["Alpha"]
-        view = LiveLine(guild, store)
+        view = PlaylistCard(guild, store)
         view.message = MagicMock()
         view.message.edit = AsyncMock()
         await _button(view, HISTORY).callback(_press(member))
@@ -291,4 +314,49 @@ async def test_the_star_saves_a_played_song(tmp_path):
     finally:
         if view is not None:
             view.stop()
+        await stop_track(guild)
+
+async def test_a_paused_song_does_not_pull_a_replay_into_voice(monkeypatch, tmp_path):
+    """Replay stays out of voice while a paused song is still current."""
+    guild, member, _player, _tracks, note = await _line_up(9312, ["Alpha", "Beta"])
+    store = GuildConfig(tmp_path / "guild.json")
+    view = PlaylistCard(guild, store)
+    try:
+        assert note == "Playing Alpha."
+        assert await next_track(guild) is None
+        assert [row.title for row in played(guild)] == ["Alpha"]
+        guild.voice_client = None
+        warmed = MagicMock()
+        left = AsyncMock()
+        monkeypatch.setattr("music.playlist.history.paused_away", lambda _guild: True)
+        monkeypatch.setattr("music.playlist.history.warm_voice", warmed)
+        monkeypatch.setattr("music.playlist.history.leave_if_idle", left)
+        monkeypatch.setattr(
+            "music.playlist.history.queue_tracks",
+            AsyncMock(return_value="Added Alpha. Beta is still paused."),
+        )
+        view.message = MagicMock()
+        view.message.edit = AsyncMock()
+        await _button(view, HISTORY).callback(_press(member))
+        press = _press(member)
+        press.guild = guild
+        await _button(view, MARK_ADD, 0).callback(press)
+        warmed.assert_not_called()
+        left.assert_not_called()
+
+        warmed.reset_mock()
+        left.reset_mock()
+        monkeypatch.setattr("music.playlist.history.paused_away", lambda _guild: False)
+        monkeypatch.setattr(
+            "music.playlist.history.queue_tracks",
+            AsyncMock(return_value="Playing Alpha."),
+        )
+        fresh = _press(member)
+        fresh.guild = guild
+        await _button(view, MARK_ADD, 0).callback(fresh)
+        warmed.assert_called_once()
+        left.assert_called_once()
+    finally:
+        view.stop()
+        guild.voice_client = None
         await stop_track(guild)

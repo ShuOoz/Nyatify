@@ -11,29 +11,51 @@ from music.panel import (
     _hold_card,
     format_clock,
     page_line,
-    progress_text,
     song_label,
     song_line,
     song_row,
+    visible_note,
 )
 from music.play.discover import EMPTY_SECONDS, GenreList
-from music.player.album import _album_line
-from music.player.card import MusicPlayer, _next_line
-from music.playlist.card import LiveLine
+from music.player.card import MusicPlayer
+from music.playlist.card import PlaylistCard
 from music.playback import stop_track
 
 from tests.music.support import _playing
 
-def test_clock_and_song_line():
+def test_a_song_line():
+    """A paused add stays on screen. Clocks, song lines, and rows name the artist and the length."""
+    case_a_paused_add_stays_on_screen()
+    case_clock_and_song_line()
+    case_song_row_names_the_artist_and_the_length()
+
+def case_a_paused_add_stays_on_screen():
+    assert visible_note("Added Extra.") is None
+    assert visible_note("Added Extra. I Ain't Worried is still paused.") == (
+        "Added Extra. I Ain't Worried is still paused."
+    )
+    assert visible_note("I Ain't Worried is still paused. The queue is full.") == (
+        "I Ain't Worried is still paused. The queue is full."
+    )
+    assert visible_note("Added The queue is full.") is None
+    assert visible_note("Added Song. The queue is full.") == "The queue is full."
+    assert visible_note("The queue is full.") == "The queue is full."
+    assert visible_note("Added 4 songs.") == "Added 4 songs."
+    assert visible_note("Added 4 songs. The queue is full.") == (
+        "Added 4 songs. The queue is full."
+    )
+
+
+def case_clock_and_song_line():
     assert format_clock(0) == "0:00"
     assert format_clock(148_000) == "2:28"
     assert format_clock(3_600_000) == "1:00:00"
     assert format_clock(-20) == "0:00"
-    assert progress_text(0, 148_000) == "0:00 / 2:28"
-    assert progress_text(74_000, 148_000) == "1:14 / 2:28"
-    assert progress_text(0, 0) == "live"
     assert song_line("I Ain't Worried", "OneRepublic", "https://example.com/song") == (
         "### [I Ain't Worried](https://example.com/song)\nOneRepublic"
+    )
+    assert song_line("Song [Official Video]", "Artist", "https://example.com/song") == (
+        "### [Song \\[Official Video\\]](https://example.com/song)\nArtist"
     )
     assert song_line("I Ain't Worried - OneRepublic", "OneRepublic", None) == (
         "### I Ain't Worried - OneRepu…"
@@ -47,7 +69,7 @@ def test_clock_and_song_line():
     assert song_label("Needed, Ed", "Ed") == "Needed, Ed"
     assert song_label("Airplane", "Air") == "Airplane - Air"
 
-def test_song_row_names_the_artist_and_the_length():
+def case_song_row_names_the_artist_and_the_length():
     assert song_row(1, "sunny days", "wave to earth", 248_000) == (
         "**1\\.** sunny days\n-# \u2007\u2008\u00a0wave to earth • 4:08"
     )
@@ -71,17 +93,6 @@ def test_song_row_names_the_artist_and_the_length():
     wide = song_row(1, "Title", "雨" * 30, 180_000, "Playing", fit=True)
     assert wide.split("\n", 1)[1].endswith("• 3:00 • Playing")
     assert "…" in wide.split("\n", 1)[1]
-    album = _album_line("雨" * 40, "雨" * 40, None)
-    assert album.split("\n", 1)[0].endswith("…")
-    assert album.split("\n", 1)[1].startswith("By ")
-    assert album.split("\n", 1)[1].endswith("…")
-    assert _album_line("Dreaming Out Loud", "OneRepublic", None) == (
-        "### Dreaming Out Loud\nBy OneRepublic"
-    )
-    coming = _next_line("雨" * 40)
-    assert coming.startswith("-# Up next: ")
-    assert coming.endswith("…")
-    assert _next_line("After") == "-# Up next: After"
     held = _hold_card("Page 1/1  |  1 Result")
     assert held.startswith("Page 1/1  |  1 Result")
     assert _columns(held) >= _CARD - 1
@@ -102,7 +113,7 @@ async def test_an_idle_music_card_is_deleted():
 
     quiet = MagicMock()
     quiet.voice_client = None
-    line = LiveLine(quiet, MagicMock())
+    line = PlaylistCard(quiet, MagicMock())
     assert line.timeout == PANEL_SECONDS
     message.delete.reset_mock()
     line.message = message

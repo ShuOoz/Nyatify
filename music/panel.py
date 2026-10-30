@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import unicodedata
 from collections.abc import Awaitable, Callable
+from functools import cache
 
 import discord
 
@@ -41,18 +43,15 @@ LABEL_ADD_ALL = f"{_PAD}{_HALF}Add All{_HALF}{_PAD}"
 LABEL_LIKED = f"{_PAD}Liked{_PAD}"
 RADIO_MARK = "-# Radio"
 _DOTS = "…"
+_FULL = "The queue is full."
+_FULL_SUFFIX = f" {_FULL}"
 
 # Narrow letters and digits. m and w are wider. The rest of the set is under one narrow letter.
 _NARROW = frozenset("abcdefghijklnopqrstuvxyz0123456789")
 _THIN = frozenset(" .,;:'\"!?()[]{}<>/\\|+-=*`~_")
-_SILENT = discord.AllowedMentions.none()
 
-Started = Callable[[discord.Interaction], Awaitable[None]]
-# The platform is the site already on the card. None starts a name search.
-Search = Callable[[discord.Interaction, str, str | None], Awaitable[None]]
-
-
-def _half_slow(char: str) -> int:
+@cache
+def _half(char: str) -> int:
     """2 narrow, 4 capital or another script, 6 emoji, 0 for a mark that does not draw."""
     category = unicodedata.category(char)
     if category in {"Mn", "Me", "Cf"}:
@@ -60,75 +59,46 @@ def _half_slow(char: str) -> int:
     code = ord(char)
     if 0x1F000 <= code <= 0x1FAFF or 0x2600 <= code <= 0x27BF or 0x2B00 <= code <= 0x2BFF:
         return 6
-    if char in _NARROW:
+    if char in _NARROW or char == "\u2007":
         return 2
-    if char in _THIN or (category == "Zs" and char != "\u2007"):
+    if char in _THIN or category == "Zs":
         return 1
-    if char == "\u2007":
-        return 2
     return 4
 
 
-_ASCII_HALF = tuple(_half_slow(chr(code)) for code in range(128))
-_HALF_CACHE: dict[str, int] = {}
-_COL_CACHE: dict[str, int] = {}
-_DOTS_W = _half_slow(_DOTS)
-
-
-def _half(char: str) -> int:
-    code = ord(char)
-    if code < 128:
-        return _ASCII_HALF[code]
-    size = _HALF_CACHE.get(char)
-    if size is None:
-        size = _half_slow(char)
-        _HALF_CACHE[char] = size
-    return size
+def _width(text: str) -> int:
+    return sum(_half(char) for char in text)
 
 
 def _clip(text: str, limit: int = _LINE) -> str:
     """Cut a line to `limit` half-columns. A line that fits is returned unchanged."""
-    length = len(text)
-    # Nothing is wider than 6, and nothing ASCII is wider than 4.
-    if length * 6 <= limit or (length * 4 <= limit and text.isascii()):
-        return text
-    room = limit - _DOTS_W
-    width = 0
-    cut: int | None = None
+    room = limit - _half(_DOTS)
+    width = cut = 0
     for index, char in enumerate(text):
-        size = _half(char)
-        if cut is None and width + size > room:
-            cut = index
-        width += size
+        width += _half(char)
         if width > limit:
-            break
-    if width <= limit:
-        return text
-    return f"{text[:0 if cut is None else cut].rstrip()}{_DOTS}"
+            return f"{text[:cut].rstrip()}{_DOTS}"
+        if width <= room:
+            cut = index + 1
+    return text
 
 
 def _columns(text: str) -> int:
     if text.isascii():
         return len(text)
-    total = 0
-    for char in text:
-        if ord(char) < 128:
-            total += 1
-            continue
-        unit = _COL_CACHE.get(char)
-        if unit is None:
-            unit = 2 if unicodedata.east_asian_width(char) in "WF" else 1
-            _COL_CACHE[char] = unit
-        total += unit
-    return total
+    return sum(2 if unicodedata.east_asian_width(char) in "WF" else 1 for char in text)
 
 
 def _hold_card(text: str) -> str:
     """Pad out to 32 wide columns. The phone drops the filler."""
     gap = _CARD - _columns(text)
-    if gap <= 0:
-        return text
-    return text + _PAD * (gap // 2)
+    return text if gap <= 0 else text + _PAD * (gap // 2)
+
+
+def progress_text(position: int, length: int) -> str:
+    if length <= 0:
+        return "live"
+    return f"{format_clock(position)} / {format_clock(length)}"
 
 
 def format_clock(ms: int) -> str:
@@ -142,22 +112,17 @@ def format_clock(ms: int) -> str:
 
 def _name_in_title(artist: str, title: str) -> bool:
     """True when the artist is already a whole-word run inside the title."""
-    name = artist.casefold().split()
-    words = title.casefold().split()
-    size = len(name)
-    if not size or size > len(words):
-        return False
-    if size == 1:
-        return name[0] in words
-    return f" {' '.join(name)} " in f" {' '.join(words)} "
+    name = " ".join(artist.casefold().split())
+    words = " ".join(title.casefold().split())
+    return bool(name) and f" {name} " in f" {words} "
 
 
 def _shown(title: str, author: str) -> tuple[str, str]:
     name = title.strip() or "Unknown"
     artist = author.strip()
-    if not artist or _name_in_title(artist, name):
-        return name, ""
-    return name, artist
+    if artist and not _name_in_title(artist, name):
+        return name, artist
+    return name, ""
 
 
 def song_label(title: str, author: str) -> str:
@@ -172,9 +137,7 @@ def song_line(title: str, author: str, uri: str | None) -> str:
     """
     name, artist = _shown(title, author)
     head = f"### {_link(_clip(name), uri)}"
-    if not artist:
-        return head
-    return f"{head}\n{_clip(artist)}"
+    return head if not artist else f"{head}\n{_clip(artist)}"
 
 
 def song_row(
@@ -194,30 +157,29 @@ def song_row(
     takes more of that width than a narrow one. The clock and the note stay.
     """
     prefix = f"{index}. "
-    name = _clip(" ".join(title.split()) or "Unknown", _LINE - sum(_half(char) for char in prefix))
+    name = _clip(" ".join(title.split()) or "Unknown", _LINE - _width(prefix))
     head = f"**{index}\\.** {name}"
     who = " ".join(author.split())
     clock = format_clock(length) if length > 0 else ""
-    note = " ".join(extra.split())
-    tail = [part for part in (clock, note) if part]
+    tail = [part for part in (clock, " ".join(extra.split())) if part]
     if not who and not tail:
         return head
     gap = "\u2007" * len(str(index)) + "\u2008\u00a0"
     if not fit:
         return f"{head}\n-# {gap}{sep.join([who, *tail])}"
-    room = _LINE - sum(_half(char) for char in gap)
-    tail_text = sep.join(tail)
-    if who and tail_text:
-        bridge = sum(_half(char) for char in sep)
-        kept = sum(_half(char) for char in tail_text)
-        if bridge + kept < room:
-            who = _clip(who, room - bridge - kept)
-            detail = f"{who}{sep}{tail_text}"
-        else:
-            detail = _clip(f"{who}{sep}{tail_text}", room)
-    else:
-        detail = _clip(who or tail_text, room)
+    detail = _fit_detail(who, tail, sep, _LINE - _width(gap))
     return f"{head}\n-# {gap}{detail}"
+
+
+def _fit_detail(who: str, tail: list[str], sep: str, room: int) -> str:
+    """Keep the clock and the note. The artist takes whatever width is left."""
+    joined = sep.join(tail)
+    if not who or not joined:
+        return _clip(who or joined, room)
+    reserved = _width(sep + joined)
+    if reserved < room:
+        return f"{_clip(who, room - reserved)}{sep}{joined}"
+    return _clip(f"{who}{sep}{joined}", room)
 
 
 def page_line(page: int, pages: int, count: int, noun: str = "Result") -> str:
@@ -226,99 +188,61 @@ def page_line(page: int, pages: int, count: int, noun: str = "Result") -> str:
 
 
 def meta_line(requester_id: int | None, channel_id: int | None) -> str:
-    parts: list[str] = []
-    if requester_id is not None:
-        parts.append(f"<@{requester_id}>")
-    if channel_id is not None:
-        parts.append(f"<#{channel_id}>")
-    return " | ".join(parts)
+    who = f"<@{requester_id}>" if requester_id is not None else ""
+    where = f"<#{channel_id}>" if channel_id is not None else ""
+    return " | ".join(part for part in (who, where) if part)
 
 
 def _link(label: str, uri: str | None) -> str:
-    if (
-        uri
-        and uri.startswith(("http://", "https://"))
-        and "[" not in label
-        and "]" not in label
-        and ")" not in uri
-        and " " not in uri
-    ):
-        return f"[{label}]({uri})"
-    return label
+    if not uri or not uri.startswith(("http://", "https://")) or ")" in uri or " " in uri:
+        return label
+    safe = label.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+    return f"[{safe}]({uri})"
 
 
-def progress_text(position: int, length: int) -> str:
-    if length <= 0:
-        return "live"
-    return f"{format_clock(position)} / {format_clock(length)}"
-
-
-async def delete_panel(message: discord.Message | None) -> None:
-    """Remove a music card. A message that is already gone is left alone."""
-    if message is None:
-        return
+async def _quiet(call: Callable[..., Awaitable[object]], warning: str, /, **kwargs) -> None:
     try:
-        await message.delete()
+        await call(**kwargs)
     except discord.HTTPException:
-        log.warning("music panel could not close", exc_info=True)
+        log.warning(warning, exc_info=True)
+
+
+def _noted(line: str) -> str:
+    """Drop a full-queue sentence that was added after another note."""
+    if line.endswith(_FULL_SUFFIX) and line[: -len(_FULL_SUFFIX)].endswith("."):
+        return line[: -len(_FULL_SUFFIX)]
+    return line
+
+
+def queue_is_full(line: str) -> bool:
+    """The full-queue sentence was added after the note. A song can be named that."""
+    return line == _FULL or line != _noted(line)
+
+
+def _several(line: str) -> bool:
+    """Added 3 songs. The count stays when the queue is also full."""
+    note = _noted(line)
+    if not note.startswith("Added ") or not note.endswith(" songs."):
+        return False
+    return note.removeprefix("Added ").removesuffix(" songs.").isdigit()
 
 
 def visible_note(line: str) -> str | None:
-    """A plain add stays quiet. The full-queue warning still shows."""
+    """A one-song add stays quiet. Several songs, a paused song, and a full queue still show."""
     if not line.startswith("Added "):
         return line
-    if line.endswith("The queue is full."):
-        return "The queue is full."
-    return None
+    if "is still paused." in line or _several(line):
+        return line
+    return _FULL if queue_is_full(line) else None
 
 
 async def _note(interaction: discord.Interaction, line: str) -> None:
     shown = visible_note(line)
     if shown is None:
         if isinstance(interaction, discord.Interaction) and not interaction.response.is_done():
-            try:
-                await interaction.response.defer(ephemeral=True)
-            except discord.HTTPException:
-                log.warning("music could not close the add note", exc_info=True)
+            await _quiet(interaction.response.defer, "music could not close the add note", ephemeral=True)
         return
     await respond(interaction, notice_text(shown), ephemeral=True)
-
-
-async def show_note(interaction: discord.Interaction, line: str, *, quote: bool = False) -> None:
-    """Put a line on screen before the slow work.
-
-    A real interaction is answered here, so the click does not sit on a spinner.
-    Anything that is not an interaction waits and sends the final line instead.
-    """
-    if not isinstance(interaction, discord.Interaction):
-        return
-    text = quote_text(notice_text(line)) if quote else notice_text(line)
-    try:
-        if interaction.response.is_done():
-            # The deferred slash reply. A card must not call this once it is on screen.
-            await interaction.edit_original_response(content=text)
-        else:
-            await interaction.response.send_message(content=text, ephemeral=True)
-    except discord.HTTPException:
-        log.warning("music could not show a note", exc_info=True)
-
-
-async def finish_note(interaction: discord.Interaction, line: str) -> None:
-    """Replace the line from show_note, or send it when that call did not answer.
-
-    A plain add removes that line. Nothing stays on screen for it.
-    """
-    shown = visible_note(line)
-    if isinstance(interaction, discord.Interaction) and interaction.response.is_done():
-        try:
-            if shown is None:
-                await interaction.delete_original_response()
-            else:
-                await interaction.edit_original_response(content=notice_text(shown))
-        except discord.HTTPException:
-            log.warning("music could not update the note", exc_info=True)
-        return
-    await _note(interaction, line)
 
 
 def _button_rows(count: int, widest: int = 5) -> list[int]:
@@ -332,6 +256,55 @@ def _button_rows(count: int, widest: int = 5) -> list[int]:
 
 def _row(*items: discord.ui.Item, id: int | None = None) -> discord.ui.ActionRow:
     return discord.ui.ActionRow(*items, id=id)
+
+
+
+_SILENT = discord.AllowedMentions.none()
+
+Started = Callable[[discord.Interaction], Awaitable[None]]
+# The platform is the site already on the card. None starts a name search.
+Search = Callable[[discord.Interaction, str, str | None], Awaitable[None]]
+
+
+async def delete_panel(message: discord.Message | None) -> None:
+    """Remove a music card. A message that is already gone is left alone."""
+    if message is not None:
+        await _quiet(message.delete, "music panel could not close")
+
+
+async def show_note(interaction: discord.Interaction, line: str, *, quote: bool = False) -> None:
+    """Put a line on screen before the slow work.
+
+    A real interaction is answered here, so the click does not sit on a spinner.
+    Anything that is not an interaction waits and sends the final line instead.
+    """
+    if not isinstance(interaction, discord.Interaction):
+        return
+    text = quote_text(notice_text(line)) if quote else notice_text(line)
+    # The deferred slash reply. A card must not call this once it is on screen.
+    done = interaction.response.is_done()
+    send = interaction.edit_original_response if done else interaction.response.send_message
+    extra = {} if done else {"ephemeral": True}
+    await _quiet(send, "music could not show a note", content=text, **extra)
+
+
+async def finish_note(interaction: discord.Interaction, line: str) -> None:
+    """Replace the line from show_note, or send it when that call did not answer.
+
+    A plain add removes that line. Nothing stays on screen for it.
+    """
+    shown = visible_note(line)
+    if isinstance(interaction, discord.Interaction) and interaction.response.is_done():
+        if shown is None:
+            await _quiet(interaction.delete_original_response, "music could not update the note")
+        else:
+            await _quiet(
+                interaction.edit_original_response,
+                "music could not update the note",
+                content=notice_text(shown),
+            )
+        return
+    await _note(interaction, line)
 
 
 def _selected(menu: discord.ui.Select) -> str | None:
@@ -349,12 +322,31 @@ async def _dispatch(
     index: int | None = None,
 ) -> None:
     handler = getattr(view, method, None)
-    if handler is None:
-        return
-    if index is None:
-        await handler(interaction)
-    else:
-        await handler(interaction, index)
+    if handler is not None:
+        await (handler(interaction) if index is None else handler(interaction, index))
+
+
+class Press:
+    """The clicks on one card. The latest one owns the picture."""
+
+    def __init__(self) -> None:
+        self.token = self.depth = 0
+
+    def begin(self) -> int:
+        self.token += 1
+        self.depth += 1
+        return self.token
+
+    def finish(self) -> None:
+        if self.depth:
+            self.depth -= 1
+
+    def live(self, token: int) -> bool:
+        return token == self.token
+
+    @property
+    def busy(self) -> bool:
+        return self.depth > 0
 
 
 class _Card(discord.ui.LayoutView):
@@ -362,15 +354,34 @@ class _Card(discord.ui.LayoutView):
         super().__init__(timeout=PANEL_SECONDS)
         self.message: discord.Message | None = None
         self._working = False
+        self._press = Press()
+        self._task_token: dict[asyncio.Task, int] = {}
+        # The latest press asked for a refresh once every click has finished.
+        self._catch_due = False
 
     async def on_timeout(self) -> None:
         await delete_panel(self.message)
 
-    async def _busy(self, interaction: discord.Interaction) -> bool:
-        if self._working:
-            await _note(interaction, "Already working on that.")
-            return True
+    def _begin_press(self) -> int:
+        """Count this click. A second one is kept, and it becomes the latest."""
+        token = self._press.begin()
         self._working = True
+        if (task := asyncio.current_task()) is not None:
+            self._task_token[task] = token
+        return token
+
+    def _end_press(self) -> None:
+        """This click has finished. Another one that is still running keeps the card busy."""
+        task = asyncio.current_task()
+        token = None if task is None else self._task_token.pop(task, None)
+        if token is not None and self._press.live(token):
+            self._catch_due = True
+        self._press.finish()
+        self._working = self._press.busy
+
+    async def _busy(self, _interaction: discord.Interaction) -> bool:
+        """Accept the click. A newer one keeps the picture when this one finishes."""
+        self._begin_press()
         return False
 
 
@@ -388,30 +399,23 @@ class _SearchCard(_Card):
             await interaction.response.defer()
 
     async def _can_search(self, interaction: discord.Interaction) -> bool:
-        if self.is_finished():
-            await self._ack(interaction)
-            return False
-        if self._working:
-            await _note(interaction, "Already working on that.")
-            return False
-        return True
+        if not self.is_finished():
+            return True
+        await self._ack(interaction)
+        return False
 
     def _pause(self) -> None:
         """Drop a click that started before this search and would paint over it."""
 
     def _resume(self) -> None:
-        return
+        """Paint again when the search left this card on screen."""
 
     async def _restore(self, interaction: discord.Interaction) -> None:
-        edit = (
-            interaction.edit_original_response
-            if interaction.response.is_done()
-            else interaction.response.edit_message
+        done = interaction.response.is_done()
+        edit = interaction.edit_original_response if done else interaction.response.edit_message
+        await _quiet(
+            edit, "music search could not restore the card", view=self, allowed_mentions=_SILENT,
         )
-        try:
-            await edit(view=self, allowed_mentions=_SILENT)
-        except discord.HTTPException:
-            log.warning("music search could not restore the card", exc_info=True)
 
     async def _hand_off(
         self,
@@ -427,14 +431,11 @@ class _SearchCard(_Card):
         if self.is_finished():
             await _note(interaction, "That card has closed.")
             return
-        if self._working:
-            await _note(interaction, "Already working on that.")
-            return
-        self._working = True
+        self._begin_press()
         replaced = False
         try:
             self._pause()
-            replaced = (await opener(interaction, query, platform, commit=self._retire)) is True
+            replaced = (await opener(interaction, query, platform, replace_card=self._retire)) is True
         except Exception:
             log.exception("music search failed")
             if not interaction.response.is_done():
@@ -442,12 +443,10 @@ class _SearchCard(_Card):
         finally:
             # Unlock even if the search is cancelled or the error note fails.
             # Leave a replaced or stopped card paused so an old click cannot paint over it.
-            self._working = False
-            if not replaced and not self.is_finished():
+            self._end_press()
+            if not replaced and not self._working and not self.is_finished():
                 self._resume()
-        if replaced or self.is_finished():
-            return
-        if interaction.response.is_done():
+        if not replaced and not self.is_finished() and interaction.response.is_done():
             await self._restore(interaction)
 
     def _retire(self) -> None:
@@ -462,13 +461,7 @@ class _Menu(discord.ui.Select):
         options: list[discord.SelectOption],
         custom_id: str,
     ) -> None:
-        super().__init__(
-            custom_id=custom_id,
-            placeholder=placeholder,
-            min_values=1,
-            max_values=1,
-            options=options,
-        )
+        super().__init__(custom_id=custom_id, placeholder=placeholder, options=options)
         self.method = method
 
     async def callback(self, interaction: discord.Interaction) -> None:

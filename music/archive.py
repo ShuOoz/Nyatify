@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import json
 import logging
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar, cast
 
 from config import BASE_DIR, write_text_atomic
 from guild import GuildConfig
-from music.source import canonical_url, normalize_platform
+from music.source import canonical_url, kept_url, normalize_platform
 
 log = logging.getLogger(__name__)
 
@@ -46,17 +47,42 @@ class SavedList:
     songs: tuple[SavedSong, ...]
 
 
+def _visible_name(text: str) -> str:
+    """One spelling for one name. Hidden marks and split accents do not make a second list."""
+    folded = unicodedata.normalize("NFC", text)
+    visible = "".join(char for char in folded if unicodedata.category(char) != "Cf")
+    return " ".join(visible.split())
+
+
 def playlist_name(text: str) -> str | None:
-    name = " ".join(text.split())
+    name = _visible_name(text)
     return name[:NAME_LIMIT] if name else None
+
+
+def name_too_long(text: str) -> bool:
+    """True when the typed name would be cut. Cutting it would hide a collision."""
+    return len(_visible_name(text)) > NAME_LIMIT
 
 
 def list_playlists(store: GuildConfig, guild_id: int) -> list[SavedList]:
     found: list[SavedList] = []
+    index: dict[str, int] = {}
     for raw in store.guild_list(guild_id, PLAYLISTS):
         saved = _saved_list(raw)
-        if saved is not None:
+        if saved is None:
+            continue
+        key = saved.name.casefold()
+        place = index.get(key)
+        if place is None:
+            index[key] = len(found)
             found.append(saved)
+            continue
+        current = found[place]
+        found[place] = SavedList(
+            current.name,
+            current.saver_id,
+            _unique(current.songs + saved.songs),
+        )
     return found
 
 
@@ -80,6 +106,8 @@ def create_playlist(
     cleaned = playlist_name(name)
     if cleaned is None:
         return "Name the playlist."
+    if name_too_long(name):
+        return f"A playlist name can be {NAME_LIMIT} characters."
     shelf = _Shelf(store, guild_id)
     if shelf.place(cleaned) is not None:
         return "That name is already a playlist."
@@ -128,8 +156,7 @@ def replace_songs(
         return held
     shelf, place = held
     saved = shelf.lists[place]
-    kept = tuple(_keep(song) for song in songs if _link(song.url))[:SONG_LIMIT]
-    updated = SavedList(saved.name, saved.saver_id, kept)
+    updated = SavedList(saved.name, saved.saver_id, _unique(songs))
     shelf.lists[place] = updated
     shelf.write()
     return updated
@@ -158,7 +185,7 @@ def save_song(
         shelf.write()
         return created
     saved = shelf.lists[place]
-    if any(item.url == stored.url for item in saved.songs):
+    if any(canonical_url(item.url) == canonical_url(stored.url) for item in saved.songs):
         return f"{stored.title} is already in the playlist."
     if len(saved.songs) >= SONG_LIMIT:
         return f"A playlist keeps {SONG_LIMIT} songs."
@@ -223,7 +250,8 @@ def _saved_list(raw: object) -> SavedList | None:
 def _saved_songs(raw: object) -> tuple[SavedSong, ...]:
     if not isinstance(raw, list):
         return ()
-    return tuple(song for item in raw if (song := _saved_song(item)) is not None)
+    songs = tuple(song for item in raw if (song := _saved_song(item)) is not None)
+    return _unique(songs)
 
 
 def _saved_song(raw: object) -> SavedSong | None:
@@ -250,9 +278,10 @@ def _unique(songs: tuple[SavedSong, ...]) -> tuple[SavedSong, ...]:
         if _link(song.url) is None:
             continue
         stored = _keep(song)
-        if stored.url in seen:
+        ident = canonical_url(stored.url)
+        if ident in seen:
             continue
-        seen.add(stored.url)
+        seen.add(ident)
         kept.append(stored)
         if len(kept) == SONG_LIMIT:
             break
@@ -263,7 +292,7 @@ def _keep(song: SavedSong) -> SavedSong:
     return SavedSong(
         song.title or "Unknown",
         normalize_platform(song.platform),
-        canonical_url(song.url),
+        kept_url(song.url),
         _words(song.author),
         _count(song.length),
     )
@@ -271,7 +300,7 @@ def _keep(song: SavedSong) -> SavedSong:
 
 def _link(value: object) -> str | None:
     if isinstance(value, str) and value.startswith(("http://", "https://")):
-        return canonical_url(value)
+        return kept_url(value)
     return None
 
 
@@ -289,6 +318,99 @@ def _count(value: object) -> int:
 
 def _saver(value: object) -> int | None:
     return _count(value) or None
+
+
+
+# An apostrophe sits inside a word. A hyphen still splits, so "slow-down" is two words.
+_APOSTROPHE = frozenset("'’ʼ‘")
+
+
+def song_matches(query: str, song: SavedSong) -> bool:
+    """Words may be out of order. A short word must be typed. A longer word may be one or two edits off."""
+    needle = _plain(query)
+    if not needle:
+        return False
+    title, author = _plain(song.title), _plain(song.author)
+    pieces = f"{title} {author}".split()
+    if pieces and all(_word_hits(word, pieces) for word in needle.split()):
+        return True
+    compact = needle.replace(" ", "")
+    # "REM" is "R.E.M." joined. Under four letters, only that exact join counts.
+    if _joined(compact, title.split()) or _joined(compact, author.split()):
+        return True
+    if len(compact) >= 4 and (_fuzzy(compact, title) or _fuzzy(compact, author)):
+        return True
+    # A title with no spaces is one word, so "里香" would miss "七里香".
+    return len(compact) >= 2 and _unspaced(compact) and (
+        compact in title.replace(" ", "") or compact in author.replace(" ", "")
+    )
+
+
+def _unspaced(text: str) -> bool:
+    """Chinese, Japanese, and Korean text has no spaces between words."""
+    return any(
+        "\u3040" <= char <= "\u30ff"
+        or "\u3400" <= char <= "\u9fff"
+        or "\uac00" <= char <= "\ud7af"
+        for char in text
+    )
+
+
+def _plain(text: str) -> str:
+    folded = unicodedata.normalize("NFKD", text)
+    folded = "".join(ch for ch in folded if not unicodedata.combining(ch)).casefold()
+    chars = ["" if ch in _APOSTROPHE else ch if ch.isalnum() else " " for ch in folded]
+    return " ".join("".join(chars).split())
+
+
+def _word_hits(word: str, pieces: list[str]) -> bool:
+    # The query may start a longer song word. "beatles" must not match "beat".
+    limit = 0 if len(word) <= 3 else 1 if len(word) <= 6 else 2
+    for piece in pieces:
+        if word == piece or (len(word) >= 3 and piece.startswith(word)):
+            return True
+        if limit == 0 or abs(len(word) - len(piece)) > limit:
+            continue
+        dist = _distance(word, piece)
+        if dist <= limit and (word[0] == piece[0] or (len(word) >= 5 and dist <= 1)):
+            return True
+    return False
+
+
+def _joined(query: str, words: list[str]) -> bool:
+    for start in range(len(words)):
+        joined = ""
+        for word in words[start:]:
+            joined += word
+            if joined == query:
+                return True
+            if len(joined) > len(query):
+                break
+    return False
+
+
+def _fuzzy(query: str, field: str) -> bool:
+    compact = field.replace(" ", "")
+    limit = 1 if len(query) <= 6 else 2
+    if not query or not compact or query[0] != compact[0] or abs(len(query) - len(compact)) > limit:
+        return False
+    return _distance(query, compact) <= limit
+
+
+def _distance(left: str, right: str) -> int:
+    """Swapping two neighbouring letters counts as one edit."""
+    if left == right:
+        return 0
+    previous, current = [0] * (len(right) + 1), list(range(len(right) + 1))
+    for i, a in enumerate(left, start=1):
+        row = [i]
+        for j, b in enumerate(right, start=1):
+            best = min(current[j] + 1, row[-1] + 1, current[j - 1] + (a != b))
+            if i > 1 and j > 1 and a == right[j - 2] and left[i - 2] == b:
+                best = min(best, previous[j - 2] + 1)
+            row.append(best)
+        previous, current = current, row
+    return current[-1]
 
 
 # Line record. The queue and the history, stored in data/music_session.json.
@@ -326,13 +448,20 @@ _adopt_previous(PATH, _PREVIOUS_NAME)
 
 
 def read_guild(guild_id: int) -> dict | None:
-    raw = _open().get(str(guild_id))
+    try:
+        raw = _open().get(str(guild_id))
+    except _UnreadableSession:
+        return None
     return raw if isinstance(raw, dict) else None
 
 
 def read_all() -> dict[int, dict]:
+    try:
+        book = _open()
+    except _UnreadableSession:
+        return {}
     found: dict[int, dict] = {}
-    for key, raw in _open().items():
+    for key, raw in book.items():
         guild_id = _guild_id(key)
         if guild_id is not None and isinstance(raw, dict):
             found[guild_id] = raw
@@ -340,7 +469,10 @@ def read_all() -> dict[int, dict]:
 
 
 def write_guild(guild_id: int, record: dict | None) -> None:
-    book = _open()
+    try:
+        book = _open()
+    except _UnreadableSession:
+        return
     key = str(guild_id)
     if record is None:
         if key not in book:
@@ -351,11 +483,32 @@ def write_guild(guild_id: int, record: dict | None) -> None:
     _write_line(book)
 
 
+class _UnreadableSession(Exception):
+    """The session file is there, but this process could not trust it."""
+
+
+# A failed read stays failed until the path changes, so a save cannot replace it.
+_failed_path: Path | None = None
+
+
 def _open() -> dict[str, dict]:
-    global _cache_path, _book
-    if _book is None or _cache_path != PATH:
+    global _cache_path, _book, _failed_path
+    if _cache_path != PATH:
+        _failed_path = None
+    if _failed_path == PATH:
+        raise _UnreadableSession
+    if _book is not None and _cache_path == PATH:
+        return _book
+    try:
+        loaded = _read(PATH)
+    except _UnreadableSession:
+        _failed_path = PATH
         _cache_path = PATH
-        _book = _read(PATH)
+        _book = None
+        raise
+    _failed_path = None
+    _cache_path = PATH
+    _book = loaded
     return _book
 
 
@@ -365,10 +518,11 @@ def _read(path: Path) -> dict[str, dict]:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        log.warning("music session file could not be read", exc_info=True)
-        return {}
+        log.warning("music session file could not be read and will not be replaced", exc_info=True)
+        raise _UnreadableSession
     if not isinstance(raw, dict):
-        return {}
+        log.warning("music session file could not be read and will not be replaced")
+        raise _UnreadableSession
     return {str(key): value for key, value in raw.items() if isinstance(value, dict)}
 
 

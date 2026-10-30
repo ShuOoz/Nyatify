@@ -22,10 +22,13 @@ from music.playback import (
     clear_played,
     clear_queued,
     drop_queued,
-    edits_queue,
+    can_edit_queue,
     leave_if_idle,
     move_queued,
     now_playing,
+    played,
+    paused_away,
+    play_saved,
     playing_note,
     queued,
     skipped_songs,
@@ -88,11 +91,14 @@ class _Queue:
             if not found.songs:
                 await _note(interaction, f"{found.name} has no songs.")
                 return
-            cold = getattr(interaction.guild, "voice_client", None) is None
+            # A paused song is still current. Joining would sit there in silence.
+            cold = (
+                getattr(interaction.guild, "voice_client", None) is None
+                and not paused_away(interaction.guild)
+            )
             if cold:
                 warm_voice(interaction.user, interaction.guild)
             await _defer(interaction)
-            from music.playlist import play_saved
             try:
                 line = await play_saved(
                     interaction.user,
@@ -114,7 +120,7 @@ class _Queue:
                 return
             await _note(interaction, line)
         finally:
-            self._working = False
+            await self._release()
             if cold:
                 asyncio.create_task(leave_if_idle(interaction.guild), name="music-idle")
 
@@ -132,12 +138,29 @@ class _Queue:
         if await self._busy(interaction):
             return
         try:
+            if not await self._in_room(interaction):
+                return
             saved = self.opened
             guild_id = _guild_num(self.guild)
-            if saved is None or self.panel != PLAYLISTS or guild_id is None:
+            shown = saved.songs[index] if saved is not None and 0 <= index < len(saved.songs) else None
+            if saved is None or shown is None or self.panel != PLAYLISTS or guild_id is None:
                 await _defer(interaction)
                 return
             await interaction.response.defer()
+            # The card can still show the list from before a song was saved at
+            # the top. Drop this row only when that same song is still here.
+            current = find_playlist(self.store, guild_id, saved.name)
+            moved = (
+                current is not None
+                and (index >= len(current.songs) or current.songs[index].url != shown.url)
+            )
+            if moved:
+                self.opened = current
+                self._removing = bool(current.songs)
+                self.paint()
+                await self._push()
+                await _note(interaction, "That song is gone.")
+                return
             updated = drop_song(self.store, guild_id, saved.name, index)
             if isinstance(updated, str):
                 await _note(interaction, updated)
@@ -154,7 +177,7 @@ class _Queue:
             self.paint()
             await self._push()
         finally:
-            self._working = False
+            await self._release()
 
 
     async def on_order(self, interaction: discord.Interaction) -> None:
@@ -171,9 +194,6 @@ class _Queue:
             await _defer(interaction)
             return
         if self._moving is None or self._moving == index:
-            if self._working:
-                await _note(interaction, "Already working on that.")
-                return
             if self._moving == index:
                 self._clear_move()
             elif not self._arm_move(index):
@@ -200,7 +220,7 @@ class _Queue:
             self.paint()
             await self._push()
         finally:
-            self._working = False
+            await self._release()
 
 
     async def on_empty(self, interaction: discord.Interaction) -> None:
@@ -209,14 +229,30 @@ class _Queue:
         if self.panel not in (QUEUE, HISTORY):
             await _defer(interaction)
             return
-        count = self._waiting_count() if self.panel == QUEUE else self._played_count()
+        yours = self.panel == HISTORY and self._mine_id is not None
+        if self.panel == QUEUE:
+            count = self._waiting_count()
+        elif yours:
+            count = sum(
+                1 for row in (played(self.guild) or []) if row.requester_id == self._mine_id
+            )
+        else:
+            count = self._played_count()
         if not count:
             await _defer(interaction)
             return
-        await interaction.response.send_modal(EmptyList(self.finish_empty, self.panel))
+        # The box remembers whose songs were on screen. A later @Your does not change it.
+        mine = self._mine_id if yours else None
+        await interaction.response.send_modal(EmptyList(
+            lambda press, panel: self.finish_empty(press, panel, mine),
+            self.panel,
+            yours=yours,
+        ))
 
 
-    async def finish_empty(self, interaction: discord.Interaction, panel: str) -> None:
+    async def finish_empty(
+        self, interaction: discord.Interaction, panel: str, mine_id: int | None = None,
+    ) -> None:
         """Clear the list on screen. A live queue still needs the voice channel."""
         if await self._busy(interaction):
             return
@@ -225,13 +261,13 @@ class _Queue:
                 return
             await interaction.response.defer()
             if panel == HISTORY:
-                await clear_played(self.guild)
+                await clear_played(self.guild, mine_id)
             elif panel == QUEUE:
                 await clear_queued(self.guild)
             self.paint()
             await self._push()
         finally:
-            self._working = False
+            await self._release()
 
 
     def _waiting_count(self) -> int:
@@ -243,7 +279,7 @@ class _Queue:
         live = getattr(interaction, "guild", None)
         if isinstance(live, discord.Guild) and live.id == _guild_num(self.guild):
             self.guild = live
-        if edits_queue(interaction.user, self.guild):
+        if can_edit_queue(interaction.user, self.guild):
             return True
         await _note(interaction, "Join the voice channel first.")
         return False
@@ -286,9 +322,14 @@ class _Queue:
             for place, row in enumerate(rows)
             if _queue_key(row) == key and not (waiting and row.playing)
         ]
+        if not matches:
+            return None
         if hint in matches:
             return hint
-        return matches[0] if len(matches) == 1 else None
+        if len(matches) == 1 or hint is None:
+            return matches[0] if len(matches) == 1 else None
+        # The row moved, and more than one copy is still here. Take the closest.
+        return min(matches, key=lambda place: (abs(place - hint), place))
 
 
     def _drawn_place(self, rows: list[Queued], index: int, *, waiting: bool = True) -> int | None:
@@ -323,7 +364,7 @@ class _Queue:
             self.paint()
             await self._push()
         finally:
-            self._working = False
+            await self._release()
 
 
     def _queue(self, box: discord.ui.Container) -> tuple[int, int, int | None, str]:
@@ -362,8 +403,8 @@ class _Queue:
         """The song chosen on another page, so every page still names it."""
         if not self._ordering or self._moving is None:
             return None
-        spot = self._moving - base
-        if spot < 0 or spot >= len(waiting):
+        index = self._moving - base
+        if index < 0 or index >= len(waiting):
             return None
-        title = _clip(" ".join(waiting[spot].title.split()) or "Unknown")
-        return f"-# Moving **{spot + 1}\\.** {title}"
+        title = _clip(" ".join(waiting[index].title.split()) or "Unknown")
+        return f"-# Moving **{index + 1}\\.** {title}"

@@ -12,12 +12,12 @@ import discord
 
 from announce import ACCENT_COLOR, notice_text, respond
 from music import source
+from music.archive import SavedSong, find_playlist, list_playlists, save_song
 from music.panel import (
     LABEL_ADD_ALL,
     LABEL_LIKED,
     MARK_ADD,
     MARK_BACK,
-    MARK_CLOSE,
     MARK_NEXT,
     PAGE,
     _Add,
@@ -31,17 +31,15 @@ from music.panel import (
     finish_note,
     page_line,
     show_note,
-    visible_note,
     song_label,
     song_row,
+    visible_note,
 )
 from music.playback import (
-    find_songs,
-    leave_if_idle,
-    now_playing,
-    queue_tracks,
-    warm_voice,
+    _stored, find_songs, leave_if_idle, now_playing, paused_away, queue_tracks, warm_voice,
 )
+from music.player.rule import click_answer
+from music.playlist.popups import SaveSong, means_yes
 
 log = logging.getLogger(__name__)
 
@@ -49,22 +47,19 @@ log = logging.getLogger(__name__)
 ALBUM_SECONDS = 45.0
 ALBUM_TITLE = "## Osaka Albums"
 ALL_HINT = 'This adds every song on the album. Type "yes" to confirm'
+_FAILED = "Something went wrong while starting the song."
+# Spotify album ids are 22 characters. A longer run would swallow the bytes that follow.
+_ALBUM_IN_TRACK = re.compile(rb"https://open\.spotify\.com/album/([A-Za-z0-9]{22})")
+
+
+def _count(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
 
 
 def _record_id(value: object) -> int | None:
-    got = getattr(value, "id", None)
-    if isinstance(got, bool) or not isinstance(got, int) or got <= 0:
-        return None
-    return got
-
-
-def _playlists(store: object | None, guild: object) -> list:
-    from music.archive import list_playlists
-
-    guild_id = _record_id(guild)
-    if store is None or guild_id is None:
-        return []
-    return list_playlists(store, guild_id)
+    return _count(getattr(value, "id", None))
 
 
 def _words(value: object, fallback: str = "") -> str:
@@ -73,58 +68,53 @@ def _words(value: object, fallback: str = "") -> str:
     return " ".join(value.split()) or fallback
 
 
-def _span(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        return 0
-    return value
-
-
 def _web(value: object) -> str | None:
     if isinstance(value, str) and value.startswith(("http://", "https://")) and " " not in value:
         return value
     return None
 
 
-def _saved_track(guild: object) -> object | None:
-    from music.playback.remember import _stored
-
-    line = _stored(guild)
-    if line is None or line.current is None:
-        return None
-    return line.current.track
+def _playlists(store: object | None, guild: object) -> list:
+    guild_id = _record_id(guild)
+    if store is None or guild_id is None:
+        return []
+    return list_playlists(store, guild_id)
 
 
 def _same_recording(left: object, right: object) -> bool:
-    """True when these are the same song. A mirror can drop the artist."""
-    left_title = _words(getattr(left, "title", None)).casefold()
-    right_title = _words(getattr(right, "title", None)).casefold()
-    if not left_title or left_title != right_title:
+    """Same link, or the same name on another site. A missing artist still matches."""
+    urls = [_web(getattr(item, "uri", None)) for item in (left, right)]
+    if all(urls):
+        if source.same_url(urls[0], urls[1]):
+            return True
+        if source.different_track(urls[0], urls[1]):
+            return False
+    titles = [_words(getattr(item, "title", None)).casefold() for item in (left, right)]
+    if not titles[0] or titles[0] != titles[1]:
         return False
-    left_author = _words(getattr(left, "author", None)).casefold()
-    right_author = _words(getattr(right, "author", None)).casefold()
-    return not left_author or not right_author or left_author == right_author
+    authors = [_words(getattr(item, "author", None)).casefold() for item in (left, right)]
+    return not all(authors) or authors[0] == authors[1]
 
 
 def _current_track(guild: object) -> object | None:
     """The playing track. A mirrored one can drop the album, so the saved song counts too."""
-    player = getattr(guild, "voice_client", None)
-    current = getattr(player, "current", None)
-    saved = _saved_track(guild)
+    current = getattr(getattr(guild, "voice_client", None), "current", None)
+    line = _stored(guild)
+    saved = None if line is None or line.current is None else line.current.track
     if current is not None and _album(current):
         return current
     # The saved copy is the previous song once the live one has moved on.
-    if (
-        saved is not None
-        and _album(saved)
-        and (current is None or _same_recording(saved, current))
-    ):
+    if saved is not None and _album(saved) and (current is None or _same_recording(saved, current)):
         return saved
     return current if current is not None else saved
 
 
-# Spotify puts this address in the track bytes. The JSON field next to it is often empty.
-# Spotify album ids are 22 characters. A longer run would swallow the bytes that follow.
-_ALBUM_IN_TRACK = re.compile(rb"https://open\.spotify\.com/album/([A-Za-z0-9]{22})")
+def _first(values, read):
+    for value in values:
+        got = read(value)
+        if got:
+            return got
+    return None
 
 
 def _album_page(value: object) -> str | None:
@@ -134,85 +124,54 @@ def _album_page(value: object) -> str | None:
     page = source.spotify_album(value)
     if page:
         return page
-    web = _web(value)
-    if web is None:
-        return None
-    query = source.track_query(web)
-    if not query or source.request_mode(query) != "playlist":
-        return None
-    return query
+    query = source.track_query(value) if _web(value) else None
+    return query if query and source.request_mode(query) == "playlist" else None
 
 
 def _plugin(track: object) -> dict:
     raw = getattr(track, "raw_data", None)
-    plugin = raw.get("pluginInfo") if isinstance(raw, dict) else None
-    return plugin if isinstance(plugin, dict) else {}
-
-
-def _plugin_album(track: object) -> tuple[str, str | None]:
-    plugin = _plugin(track)
-    nested = plugin.get("album")
-    name = _words(plugin.get("albumName"))
-    if not name and isinstance(nested, str):
-        name = _words(nested)
-    url = _album_page(plugin.get("albumUrl")) or _album_page(plugin.get("albumURI"))
-    if isinstance(nested, dict):
-        name = name or _words(nested.get("name"))
-        url = url or _album_page(nested.get("url"))
-        links = nested.get("external_urls")
-        if isinstance(links, dict):
-            url = url or _album_page(links.get("spotify"))
-    return name, url
-
-
-def _playlist_album(track: object) -> tuple[str, str | None]:
-    playlist = getattr(track, "playlist", None)
-    if playlist is None:
-        return "", None
-    if str(getattr(playlist, "type", "") or "").casefold() != "album":
-        return "", None
-    return _words(getattr(playlist, "name", None)), _album_page(getattr(playlist, "url", None))
+    info = raw.get("pluginInfo") if isinstance(raw, dict) else None
+    return info if isinstance(info, dict) else {}
 
 
 def _encoded_album(track: object) -> str | None:
-    """The album address stored in the track bytes."""
     encoded = getattr(track, "encoded", None)
     if not isinstance(encoded, str) or len(encoded) < 16:
         return None
-    padded = encoded + "=" * (-len(encoded) % 4)
     try:
-        raw = base64.b64decode(padded, validate=False)
+        raw = base64.b64decode(encoded + "=" * (-len(encoded) % 4), validate=False)
     except Exception:
         return None
     found = _ALBUM_IN_TRACK.search(raw)
-    if found is None:
-        return None
-    return f"https://open.spotify.com/album/{found.group(1).decode()}"
+    return None if found is None else f"https://open.spotify.com/album/{found.group(1).decode()}"
 
 
 def _album(track: object) -> tuple[str, str | None] | None:
-    """Album name and address.
-
-    Lavalink often leaves its album fields empty. An Apple song address still
-    carries the album, as /album/{name}/{id}?i={song}. A Spotify song keeps the
-    album address in the track bytes when the JSON field is only a picture.
-    """
+    """Name and address. Apple keeps the album on the song link. Spotify keeps it in the track bytes."""
     album = getattr(track, "album", None)
-    name = _words(getattr(album, "name", None))
-    url = _album_page(getattr(album, "url", None))
-    plugin_name, plugin_url = _plugin_album(track)
-    list_name, list_url = _playlist_album(track)
-    name = name or plugin_name or list_name
-    url = url or plugin_url or list_url
-    uri = getattr(track, "uri", None)
-    linked = source.apple_album(uri) if isinstance(uri, str) else None
+    plugin = _plugin(track)
+    nested = plugin.get("album")
+    names = [getattr(album, "name", None), plugin.get("albumName")]
+    pages = [getattr(album, "url", None), plugin.get("albumUrl"), plugin.get("albumURI")]
+    if isinstance(nested, dict):
+        names.append(nested.get("name"))
+        links = nested.get("external_urls")
+        pages.extend((nested.get("url"), links.get("spotify") if isinstance(links, dict) else None))
+    elif isinstance(nested, str):
+        names.append(nested)
+    playlist = getattr(track, "playlist", None)
+    if playlist is not None and str(getattr(playlist, "type", "") or "").casefold() == "album":
+        names.append(getattr(playlist, "name", None))
+        pages.append(getattr(playlist, "url", None))
+    name = _first(names, _words) or ""
+    url = _first(pages, _album_page)
+    share = source.remembered_share(track) or getattr(track, "uri", None)
+    linked = source.apple_album(share) if isinstance(share, str) else None
     if linked:
-        slug, address = linked
-        name = name or slug
+        name = name or linked[0]
         if url is None or "?i=" in url:
-            url = address
-    if url is None:
-        url = _encoded_album(track)
+            url = linked[1]
+    url = url or _encoded_album(track)
     if not name and url is None:
         return None
     return name or "Album", url
@@ -221,81 +180,48 @@ def _album(track: object) -> tuple[str, str | None] | None:
 def _spotify_track(track: object) -> str | None:
     """The song's Spotify address, when this recording is one."""
     for value in (getattr(track, "uri", None), _plugin(track).get("save_uri")):
-        if not isinstance(value, str):
-            continue
-        query = source.track_query(value)
+        query = source.track_query(value) if isinstance(value, str) else None
         if query and source.platform_key(query) == "spotify" and "/track/" in query:
             return query
+    ident = getattr(track, "identifier", None)
     if getattr(track, "source", None) != "spotify":
         return None
-    ident = getattr(track, "identifier", None)
     if isinstance(ident, str) and ident and ident != "local":
         return f"https://open.spotify.com/track/{ident}"
     return None
 
 
-async def _fill_spotify_album(
-    guild: object,
-    track: object,
-    album: tuple[str, str | None] | None,
-) -> tuple[object, tuple[str, str | None] | None]:
-    """Load a Spotify song once when the playing copy has no album address."""
-    if album is not None and album[1]:
-        return track, album
-    link = _spotify_track(track)
-    if link is None:
-        return track, album
-    found = await find_songs(guild, link, "spotify", mode="track")
-    if isinstance(found, str) or not found.tracks:
-        return track, album
-    loaded = _album(found.tracks[0])
-    if loaded is None or not loaded[1]:
-        return track, album
-    name = album[0] if album is not None and album[0] else loaded[0]
-    return found.tracks[0], (name, loaded[1])
-
-
 def _on_album(tracks: list, current: object) -> int | None:
+    """The playing row. The link wins over the title, which can repeat on the album."""
     uri = _web(getattr(current, "uri", None))
     title = _words(getattr(current, "title", None)).casefold()
-    if uri:
-        for index, track in enumerate(tracks):
-            if _web(getattr(track, "uri", None)) == uri:
-                return index
-    if not title:
-        return None
+    named = None
     for index, track in enumerate(tracks):
-        if _words(getattr(track, "title", None)).casefold() == title:
+        if uri and _web(getattr(track, "uri", None)) == uri:
             return index
-    return None
+        if named is None and title and _words(getattr(track, "title", None)).casefold() == title:
+            named = index
+    return named
 
 
 def _album_line(name: str, artist: str, url: str | None) -> str:
     """Album name, then who made it. Wide characters take more of the line than narrow ones."""
-    head = f"### {_link(_clip(' '.join(name.split()) or 'Album'), url)}"
-    who = " ".join(artist.split())
-    if not who:
-        return head
-    return f"{head}\nBy {_clip(who)}"
+    head = f"### {_link(_clip(_words(name, 'Album')), url)}"
+    who = _words(artist)
+    return head if not who else f"{head}\nBy {_clip(who)}"
 
 
 def _cover(track: object, tracks: list) -> str | None:
     """The playing song's art, or the first picture on the album."""
-    art = _web(getattr(track, "artwork", None))
-    if art:
-        return art
-    for item in tracks:
-        art = _web(getattr(item, "artwork", None))
-        if art:
-            return art
-    return None
+    return _first((track, *tracks), lambda item: _web(getattr(item, "artwork", None)))
 
 
-def _album_window(count: int, page: int) -> tuple[int, int, int, int]:
-    pages = max(1, (count + PAGE - 1) // PAGE)
-    current = min(max(0, page), pages - 1)
-    start = current * PAGE
-    return start, min(count, start + PAGE), current, pages
+def _song(track: object) -> tuple[str, str, int]:
+    return (
+        _words(getattr(track, "title", None), "Unknown"),
+        _words(getattr(track, "author", None)),
+        _count(getattr(track, "length", None)) or 0,
+    )
 
 
 class _All(discord.ui.Modal):
@@ -312,58 +238,47 @@ class _All(discord.ui.Modal):
         self._apply = apply
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        from music.playlist.popups import means_yes
-
-        if not means_yes(str(self.query.component)):
-            if not interaction.response.is_done():
-                await interaction.response.defer(ephemeral=True)
+        if means_yes(str(self.query.component)):
+            await self._apply(interaction)
             return
-        await self._apply(interaction)
+        await _defer(interaction, ephemeral=True)
+
+
+async def _defer(interaction: discord.Interaction, *, ephemeral: bool = False) -> None:
+    if not interaction.response.is_done():
+        await interaction.response.defer(ephemeral=ephemeral)
+
+
+async def _tell(interaction: discord.Interaction, line: str) -> None:
+    await respond(interaction, notice_text(line), ephemeral=True)
 
 
 async def _beside(interaction: discord.Interaction, line: str) -> None:
-    """Tell the person without touching the album message.
-
-    A plain add stays quiet. A full queue or a failure is its own note.
-    """
+    """A plain add stays quiet. A full queue or a failure is its own note, beside the album."""
     shown = visible_note(line)
     if shown is None:
-        if not interaction.response.is_done():
-            await interaction.response.defer()
+        await _defer(interaction)
         return
-    await respond(interaction, notice_text(shown), ephemeral=True)
+    await _tell(interaction, shown)
 
 
 class _AlbumCard(discord.ui.LayoutView):
     """One album: a cover, five songs a page, and a confirm before every song is queued."""
 
     def __init__(
-        self,
-        name: str,
-        url: str | None,
-        artist: str,
-        artwork: str | None,
-        tracks: list,
-        playing: int | None,
-        platform: str,
-        guild: object | None = None,
-        store: object | None = None,
+        self, name: str, url: str | None, artist: str, artwork: str | None,
+        tracks: list, playing: int | None, platform: str,
+        guild: object | None = None, store: object | None = None,
     ) -> None:
         super().__init__(timeout=ALBUM_SECONDS)
         self.message: discord.Message | None = None
-        self.name = name
-        self.url = url
-        self.artist = artist
-        self.artwork = artwork
+        self.name, self.url, self.artist, self.artwork = name, url, artist, artwork
         self.tracks = list(tracks)
-        self.playing = playing
-        self.platform = platform
-        self.guild = guild
-        self._lists = store
+        self.playing, self.platform = playing, platform
+        self.guild, self._lists = guild, store
         self._release: Callable[[_AlbumCard], None] | None = None
         self.page = 0 if playing is None else playing // PAGE
         self._closed = False
-        self._working = False
         # Liked switches + over to save. The word stays, so the width stays.
         self._saving = False
         self._box: discord.ui.Container | None = None
@@ -372,105 +287,92 @@ class _AlbumCard(discord.ui.LayoutView):
         self._all = _Move("on_all", label=LABEL_ADD_ALL)
         self._queue = _Move("on_queue", label=LABEL_LIKED)
         self._close = _Close()
-        self._adds = []
-        for slot in range(PAGE):
-            button = _Add(slot)
+        self._adds = [_Add(slot) for slot in range(PAGE)]
+        for slot, button in enumerate(self._adds):
             button.id = 50 + slot
-            self._adds.append(button)
         self.paint()
 
     def paint(self) -> None:
-        start, stop, current, pages = _album_window(len(self.tracks), self.page)
-        self.page = current
-        shown = self.tracks[start:stop]
+        count = len(self.tracks)
+        pages = max(1, (count + PAGE - 1) // PAGE)
+        self.page = min(max(0, self.page), pages - 1)
+        start = self.page * PAGE
         box = discord.ui.Container(accent_colour=ACCENT_COLOR)
-        title = discord.ui.TextDisplay(ALBUM_TITLE)
-        album = discord.ui.TextDisplay(_album_line(self.name, self.artist, self.url))
+        title, album = ALBUM_TITLE, _album_line(self.name, self.artist, self.url)
         if self.artwork:
             box.add_item(discord.ui.Section(
-                title,
-                album,
+                title, album,
                 accessory=discord.ui.Thumbnail(
-                    self.artwork,
-                    description=song_label(self.name, self.artist)[:256],
+                    self.artwork, description=song_label(self.name, self.artist)[:256],
                 ),
             ))
         else:
-            box.add_item(title)
-            box.add_item(album)
+            box.add_item(discord.ui.TextDisplay(title))
+            box.add_item(discord.ui.TextDisplay(album))
         box.add_item(discord.ui.Separator())
-        if shown:
-            for offset, track in enumerate(shown):
-                index = start + offset
-                button = self._adds[offset]
-                button.index = index
-                button.label = MARK_ADD
-                button.method = "on_keep" if self._saving else "on_add"
-                box.add_item(discord.ui.Section(
-                    discord.ui.TextDisplay(song_row(
-                        index + 1,
-                        _words(getattr(track, "title", None), "Unknown"),
-                        _words(getattr(track, "author", None)),
-                        _span(getattr(track, "length", None)),
-                        "Playing" if self.playing == index else "",
-                        fit=True,
-                    )),
-                    accessory=button,
-                ))
-        else:
+        shown = self.tracks[start:start + PAGE]
+        if not shown:
             box.add_item(discord.ui.TextDisplay("This album has no songs."))
+        method = "on_keep" if self._saving else "on_add"
+        for offset, track in enumerate(shown):
+            index = start + offset
+            button = self._adds[offset]
+            button.index, button.label, button.method = index, MARK_ADD, method
+            title, author, length = _song(track)
+            playing = "Playing" if self.playing == index else ""
+            box.add_item(discord.ui.Section(
+                song_row(index + 1, title, author, length, playing, fit=True), accessory=button,
+            ))
         box.add_item(discord.ui.Separator())
-        box.add_item(discord.ui.TextDisplay(
-            _hold_card(page_line(current + 1, pages, len(self.tracks), "Track")),
-        ))
-        self._back.disabled = current == 0
-        self._next.disabled = current >= pages - 1
+        box.add_item(discord.ui.TextDisplay(_hold_card(page_line(self.page + 1, pages, count, "Track"))))
+        self._back.disabled = self.page == 0
+        self._next.disabled = self.page >= pages - 1
         self._all.disabled = not self.tracks
         # Blurple means + saves. Grey means + adds. The Liked label stays.
-        self._queue.style = (
-            discord.ButtonStyle.primary if self._saving else discord.ButtonStyle.secondary
-        )
+        self._queue.style = discord.ButtonStyle.primary if self._saving else discord.ButtonStyle.secondary
         box.add_item(_row(self._back, self._next, self._all, self._queue, self._close))
         if self._box is not None:
             self.remove_item(self._box)
         self._box = box
         self.add_item(box)
 
+    async def _applies(self, interaction: discord.Interaction, *, skip: bool = False) -> bool:
+        """True when this press should change the album. Anything else only gets an ack."""
+        if not self._closed and not skip:
+            return True
+        await _defer(interaction, ephemeral=True)
+        return False
+
     async def on_previous(self, interaction: discord.Interaction) -> None:
-        await self._turn(interaction, self.page - 1)
+        await self._redraw(interaction, page=self.page - 1)
 
     async def on_next(self, interaction: discord.Interaction) -> None:
-        await self._turn(interaction, self.page + 1)
+        await self._redraw(interaction, page=self.page + 1)
 
-    async def _turn(self, interaction: discord.Interaction, page: int) -> None:
-        if self._closed or self._working:
-            if not interaction.response.is_done():
-                await interaction.response.defer(ephemeral=True)
+    async def _redraw(
+        self, interaction: discord.Interaction, *, page: int | None = None, saving: bool | None = None,
+    ) -> None:
+        if not await self._applies(interaction):
             return
-        self.page = page
+        if page is not None:
+            self.page = page
+        if saving is not None:
+            self._saving = saving
         self.paint()
         await self._show(interaction)
 
     async def _show(self, interaction: discord.Interaction) -> None:
-        edit = (
-            interaction.edit_original_response
-            if interaction.response.is_done()
-            else interaction.response.edit_message
-        )
+        done = interaction.response.is_done()
+        edit = interaction.edit_original_response if done else interaction.response.edit_message
         try:
             await edit(view=self, allowed_mentions=discord.AllowedMentions.none())
         except discord.HTTPException:
             log.warning("music album could not refresh", exc_info=True)
 
     async def on_add(self, interaction: discord.Interaction, index: int) -> None:
-        if self._closed or index < 0 or index >= len(self.tracks):
-            if not interaction.response.is_done():
-                await interaction.response.defer(ephemeral=True)
+        if not await self._applies(interaction, skip=index < 0 or index >= len(self.tracks)):
             return
-        if self._working:
-            await respond(interaction, notice_text("Already working on that."), ephemeral=True)
-            return
-        title = _words(getattr(self.tracks[index], "title", None), "that song")
+        title = _song(self.tracks[index])[0]
         # Already on a song, so this one only waits. "Starting" is for the song that begins now.
         state = now_playing(self.guild)
         starting = None if state is not None and state.has_track else f"Starting {title}"
@@ -478,113 +380,76 @@ class _AlbumCard(discord.ui.LayoutView):
 
     async def on_all(self, interaction: discord.Interaction) -> None:
         """Ask before every song on the album joins the queue."""
-        if self._closed or self._working or not self.tracks:
-            if not interaction.response.is_done():
-                await interaction.response.defer(ephemeral=True)
-            return
-        await interaction.response.send_modal(_All(self._queue_all))
+        if await self._applies(interaction, skip=not self.tracks):
+            await interaction.response.send_modal(_All(self._queue_all))
 
     async def _queue_all(self, interaction: discord.Interaction) -> None:
-        if self._closed or not self.tracks:
-            if not interaction.response.is_done():
-                await interaction.response.defer(ephemeral=True)
-            return
-        if self._working:
-            await respond(interaction, notice_text("Already working on that."), ephemeral=True)
+        if not await self._applies(interaction, skip=not self.tracks):
             return
         await self._play(interaction, list(self.tracks), f"Queuing {self.name or 'this album'}")
 
     async def _play(self, interaction: discord.Interaction, tracks: list, starting: str | None) -> None:
-        self._working = True
-        line = "Something went wrong while starting the song."
-        cold = getattr(interaction.guild, "voice_client", None) is None
+        line = _FAILED
+        # A paused song is still current. Joining would sit there in silence.
+        cold = (
+            getattr(interaction.guild, "voice_client", None) is None
+            and not paused_away(interaction.guild)
+        )
         if cold:
             warm_voice(interaction.user, interaction.guild)
-        # Queueing starts before the "Starting…" line, so the song does not wait on it.
-        queued = asyncio.create_task(queue_tracks(
-            interaction.user, interaction.guild, tracks, self.platform,
-        ))
+        # Queue before the note so the song does not wait on Discord.
+        # finish_note would edit the album, so a song already on uses a separate note.
+        queued = asyncio.create_task(
+            queue_tracks(interaction.user, interaction.guild, tracks, self.platform),
+        )
+        answer = click_answer("album", playing=starting is None)
+        if answer == "note" and starting:
+            await show_note(interaction, starting)
+        elif answer == "aside":
+            await _defer(interaction)
         try:
-            if starting:
-                await show_note(interaction, starting)
-            elif not interaction.response.is_done():
-                # This button sits on the album. A deferred update acknowledges
-                # the click and leaves that message where it is.
-                await interaction.response.defer()
-            try:
-                line = await queued
-            except Exception:
-                log.exception("music album could not queue the song")
-            if starting:
-                await finish_note(interaction, line)
-            else:
-                # finish_note edits or deletes the original response. After a
-                # button ack, that response is the album, so a plain add would
-                # close it and an error would replace it.
-                await _beside(interaction, line)
-            if cold and not line.startswith(("Playing ", "Added ")):
-                asyncio.create_task(leave_if_idle(interaction.guild), name="music-idle")
-        finally:
-            self._working = False
+            line = await queued
+        except Exception:
+            log.exception("music album could not queue the song")
+        await (finish_note if starting else _beside)(interaction, line)
+        if cold and not line.startswith(("Playing ", "Added ")):
+            asyncio.create_task(leave_if_idle(interaction.guild), name="music-idle")
 
     async def on_queue(self, interaction: discord.Interaction) -> None:
         """+ saves instead of adding. The plus mark and the Liked label both stay."""
-        if self._closed or self._working:
-            if not interaction.response.is_done():
-                await interaction.response.defer(ephemeral=True)
-            return
-        self._saving = not self._saving
-        self.paint()
-        await self._show(interaction)
+        await self._redraw(interaction, saving=not self._saving)
 
     async def on_keep(self, interaction: discord.Interaction, index: int) -> None:
         """Save this album song into a playlist."""
-        if self._closed or not self._saving or index < 0 or index >= len(self.tracks):
-            if not interaction.response.is_done():
-                await interaction.response.defer(ephemeral=True)
+        if not await self._applies(
+            interaction, skip=not self._saving or index < 0 or index >= len(self.tracks),
+        ):
             return
-        from music.archive import SavedSong
-        from music.playlist.popups import SaveSong
-
         track = self.tracks[index]
         url = _web(getattr(track, "uri", None))
         if url is None:
-            await respond(interaction, notice_text("That song has no link to save."), ephemeral=True)
+            await _tell(interaction, "That song has no link to save.")
             return
-        song = SavedSong(
-            _words(getattr(track, "title", None), "Unknown"),
-            self.platform,
-            url,
-            _words(getattr(track, "author", None)),
-            _span(getattr(track, "length", None)),
-        )
         lists = _playlists(self._lists, self.guild)
         if not lists:
-            await respond(interaction, notice_text("There is no playlist yet."), ephemeral=True)
+            await _tell(interaction, "There is no playlist yet.")
             return
+        title, author, length = _song(track)
+        song = SavedSong(title, self.platform, url, author, length)
         await interaction.response.send_modal(SaveSong(lists, lambda press, name: self._kept(press, name, song)))
 
     async def _kept(self, interaction: discord.Interaction, name: str, song: object) -> None:
-        from music.archive import find_playlist, save_song
-
         guild_id = _record_id(self.guild)
         if self._lists is None or guild_id is None or find_playlist(self._lists, guild_id, name) is None:
-            await respond(interaction, notice_text("That playlist is gone."), ephemeral=True)
+            await _tell(interaction, "That playlist is gone.")
             return
         updated = save_song(self._lists, guild_id, name, song, _record_id(interaction.user))
-        if isinstance(updated, str):
-            await respond(interaction, notice_text(updated), ephemeral=True)
-            return
-        await respond(interaction, notice_text(f"Saved to {updated.name}."), ephemeral=True)
+        await _tell(interaction, updated if isinstance(updated, str) else f"Saved to {updated.name}.")
 
     async def on_close(self, interaction: discord.Interaction) -> None:
-        if self._closed:
-            if not interaction.response.is_done():
-                await interaction.response.defer(ephemeral=True)
+        if not await self._applies(interaction):
             return
-        self._closed = True
-        self.stop()
-        self._let_go()
+        self._drop(stop=True)
         try:
             await interaction.response.defer()
             await interaction.delete_original_response()
@@ -593,17 +458,19 @@ class _AlbumCard(discord.ui.LayoutView):
 
     async def on_timeout(self) -> None:
         """No button in the wait. The album message goes away."""
-        if self._closed:
-            return
-        self._closed = True
-        self._let_go()
-        await delete_panel(self.message)
+        if self._drop(stop=False):
+            await delete_panel(self.message)
 
-    def _let_go(self) -> None:
-        release = self._release
-        self._release = None
+    def _drop(self, *, stop: bool) -> bool:
+        if self._closed:
+            return False
+        self._closed = True
+        if stop:
+            self.stop()
+        release, self._release = self._release, None
         if release is not None:
             release(self)
+        return True
 
 
 class _Album:
@@ -624,35 +491,35 @@ class _Album:
                 return
             old_message, old_card = prior
             old_card._release = None
-            old_card._closed = True
-            old_card.stop()
+            old_card._drop(stop=True)
             try:
                 await old_message.delete()
             except discord.HTTPException:
                 log.warning("music album could not close the previous one", exc_info=True)
 
     async def on_info(self, interaction: discord.Interaction) -> None:
-        """The album this song is on. Only the person who asked sees it.
-
-        Pressing it again removes the album panel already open for them.
-        """
+        """The album this song is on. A second press replaces the one this person already has open."""
         if not self._inside(interaction):
-            await respond(interaction, notice_text("Join the voice channel first."), ephemeral=True)
+            await _tell(interaction, "Join the voice channel first.")
             return
         track = _current_track(self.guild)
         if track is None:
-            await respond(interaction, notice_text("Nothing is playing."), ephemeral=True)
+            await _tell(interaction, "Nothing is playing.")
             return
         album = _album(track)
-        if (album is None or album[1] is None) and _spotify_track(track):
-            if not interaction.response.is_done():
-                await interaction.response.defer(ephemeral=True)
+        link = _spotify_track(track) if album is None or album[1] is None else None
+        if link:
+            await _defer(interaction, ephemeral=True)
             try:
-                track, album = await _fill_spotify_album(self.guild, track, album)
+                found = await find_songs(self.guild, link, "spotify", mode="track")
+                loaded = _album(found.tracks[0]) if not isinstance(found, str) and found.tracks else None
+                if loaded is not None and loaded[1]:
+                    picked = album[0] if album is not None and album[0] else loaded[0]
+                    track, album = found.tracks[0], (picked, loaded[1])
             except Exception:
                 log.exception("music player could not read the album")
         if album is None:
-            await respond(interaction, notice_text("This song has no album."), ephemeral=True)
+            await _tell(interaction, "This song has no album.")
             return
         name, url = album
         tracks = [track]
@@ -660,39 +527,24 @@ class _Album:
         if url:
             # The album list loads while Discord accepts the click.
             loading = asyncio.create_task(find_songs(self.guild, url))
-            if not interaction.response.is_done():
-                await interaction.response.defer(ephemeral=True)
+            await _defer(interaction, ephemeral=True)
             try:
                 found = await loading
             except Exception:
                 log.exception("music player could not open the album")
-                await respond(
-                    interaction,
-                    notice_text("Something went wrong while opening the album."),
-                    ephemeral=True,
-                )
+                await _tell(interaction, "Something went wrong while opening the album.")
                 return
             if isinstance(found, str):
-                await respond(interaction, notice_text(found), ephemeral=True)
+                await _tell(interaction, found)
                 return
             platform = found.platform or platform
-            if found.tracks:
-                tracks = list(found.tracks)
-            if found.name:
-                name = found.name
+            tracks = list(found.tracks) or tracks
+            name = found.name or name
         card = _AlbumCard(
-            name,
-            url,
-            _words(getattr(track, "author", None)),
-            _cover(track, tracks),
-            tracks,
-            _on_album(tracks, track),
-            platform,
-            guild=self.guild,
-            store=self._lists,
+            name, url, _words(getattr(track, "author", None)), _cover(track, tracks),
+            tracks, _on_album(tracks, track), platform, guild=self.guild, store=self._lists,
         )
-        mentions = discord.AllowedMentions.none()
-        sent = {"view": card, "ephemeral": True, "allowed_mentions": mentions}
+        sent = {"view": card, "ephemeral": True, "allowed_mentions": discord.AllowedMentions.none()}
         user_id = _record_id(interaction.user)
         if url or interaction.response.is_done():
             message = await interaction.followup.send(**sent)
@@ -702,6 +554,5 @@ class _Album:
                 return
             message = await interaction.original_response()
         card.message = message
-        if user_id is None:
-            return
-        await self._replace_album(user_id, message, card)
+        if user_id is not None:
+            await self._replace_album(user_id, message, card)

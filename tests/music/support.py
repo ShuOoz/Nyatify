@@ -184,3 +184,62 @@ def _person(user_id: int):
     interaction.user.id = user_id
     interaction.guild.id = 31
     return interaction
+
+
+async def _quiet() -> None:
+    """Drop the line, its watchers, and any song a scenario left open."""
+    import music.archive as archive
+    import music.playback as playback
+    import music.playback.remember as remembered
+    import music.playback.start as started
+    import music.player.card as card
+
+    pending = [
+        task
+        for task in asyncio.all_tasks()
+        if not task.done() and task.get_name().startswith("music-")
+    ]
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+    for task in remembered._opening.values():
+        if not task.done():
+            task.cancel()
+    remembered._opening.clear()
+    remembered._opened.clear()
+    remembered._line_watchers.clear()
+    remembered._paint_pending.clear()
+    remembered._paint_tasks.clear()
+    remembered._saved_task.clear()
+    started._pause_waits.clear()
+    card._staged.clear()
+    card._cards.clear()
+    playback._lines.clear()
+    playback._heard.clear()
+    playback._missing.clear()
+    playback._requesters.clear()
+    archive._book = None
+    archive._cache_path = None
+    from config import settings
+    settings.lastfm_api_key = None
+    path = archive.PATH
+    if path is not None and any("pytest" in part for part in path.parts) and path.exists():
+        path.unlink()
+
+
+async def _scene(case, *args, monkeypatch=None):
+    """Run one scenario from an empty line and leave the next one empty too."""
+    await _quiet()
+    try:
+        if monkeypatch is None:
+            result = case(*args)
+            if hasattr(result, "__await__"):
+                await result
+        else:
+            with monkeypatch.context() as patch:
+                result = case(patch, *args)
+                if hasattr(result, "__await__"):
+                    await result
+    finally:
+        await _quiet()
