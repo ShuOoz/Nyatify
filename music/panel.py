@@ -17,7 +17,6 @@ PAGE = 5
 _CARD = 64
 # One row beside the side button, in half a narrow letter. The order mark is included.
 _LINE = 58
-_BAR = 24
 PANEL_SECONDS = 180.0
 _QUERY = 4000
 
@@ -28,11 +27,18 @@ MARK_ADD = "＋"
 MARK_ANY = "꩜"
 MARK_SEARCH = "✎"
 MARK_CLOSE = "⛌"
+# The history card and the player use this to save the current song.
+MARK_SAVE = "\u2726"
+# The queue uses this to add a saved playlist.
+MARK_LIST = "\u2261"
 # The phone drops both fillers. Player keeps a halfwidth filler too, so that button is wider.
 _PAD = "\u3164"
 _HALF = "\uffa0"
 LABEL_PLAYER = f"{_PAD}{_HALF}Player{_HALF}{_PAD}"
 LABEL_QUEUE = f"{_PAD}Queue{_PAD}"
+# Album only. Add All queues every song. Liked turns + into save.
+LABEL_ADD_ALL = f"{_PAD}{_HALF}Add All{_HALF}{_PAD}"
+LABEL_LIKED = f"{_PAD}Liked{_PAD}"
 RADIO_MARK = "-# Radio"
 _DOTS = "…"
 
@@ -67,7 +73,6 @@ _ASCII_HALF = tuple(_half_slow(chr(code)) for code in range(128))
 _HALF_CACHE: dict[str, int] = {}
 _COL_CACHE: dict[str, int] = {}
 _DOTS_W = _half_slow(_DOTS)
-_BARS = tuple("━" * index + "●" + "─" * (_BAR - 1 - index) for index in range(_BAR))
 
 
 def _half(char: str) -> int:
@@ -161,10 +166,15 @@ def song_label(title: str, author: str) -> str:
 
 
 def song_line(title: str, author: str, uri: str | None) -> str:
-    """Bold title, linked when the address is a normal web address. Artist on the next line."""
+    """Title as a heading, linked when the address is a normal web address. Artist under it.
+
+    A wide character takes more of the line than a narrow one.
+    """
     name, artist = _shown(title, author)
-    linked = f"**{_link(name, uri)}**"
-    return f"{linked}\n{artist}" if artist else linked
+    head = f"### {_link(_clip(name), uri)}"
+    if not artist:
+        return head
+    return f"{head}\n{_clip(artist)}"
 
 
 def song_row(
@@ -174,32 +184,45 @@ def song_row(
     length: int,
     extra: str = "",
     sep: str = " • ",
+    *,
+    fit: bool = False,
 ) -> str:
     """Bold order mark, plain title, then artist and length under the title.
 
     The period is escaped so Discord does not read "1. " as a list and drop the line below.
+    `fit` also keeps the line under the title inside the same width. A wide character
+    takes more of that width than a narrow one. The clock and the note stay.
     """
     prefix = f"{index}. "
     name = _clip(" ".join(title.split()) or "Unknown", _LINE - sum(_half(char) for char in prefix))
     head = f"**{index}\\.** {name}"
-    parts = [
-        part
-        for part in (
-            " ".join(author.split()),
-            format_clock(length) if length > 0 else "",
-            " ".join(extra.split()),
-        )
-        if part
-    ]
-    if not parts:
+    who = " ".join(author.split())
+    clock = format_clock(length) if length > 0 else ""
+    note = " ".join(extra.split())
+    tail = [part for part in (clock, note) if part]
+    if not who and not tail:
         return head
     gap = "\u2007" * len(str(index)) + "\u2008\u00a0"
-    return f"{head}\n-# {gap}{sep.join(parts)}"
+    if not fit:
+        return f"{head}\n-# {gap}{sep.join([who, *tail])}"
+    room = _LINE - sum(_half(char) for char in gap)
+    tail_text = sep.join(tail)
+    if who and tail_text:
+        bridge = sum(_half(char) for char in sep)
+        kept = sum(_half(char) for char in tail_text)
+        if bridge + kept < room:
+            who = _clip(who, room - bridge - kept)
+            detail = f"{who}{sep}{tail_text}"
+        else:
+            detail = _clip(f"{who}{sep}{tail_text}", room)
+    else:
+        detail = _clip(who or tail_text, room)
+    return f"{head}\n-# {gap}{detail}"
 
 
-def page_line(page: int, pages: int, count: int) -> str:
-    noun = "Result" if count == 1 else "Results"
-    return f"Page {page}/{pages}  |  {count} {noun}"
+def page_line(page: int, pages: int, count: int, noun: str = "Result") -> str:
+    word = noun if count == 1 else f"{noun}s"
+    return f"Page {page}/{pages}  |  {count} {word}"
 
 
 def meta_line(requester_id: int | None, channel_id: int | None) -> str:
@@ -224,28 +247,10 @@ def _link(label: str, uri: str | None) -> str:
     return label
 
 
-def progress_bar(position: int, length: int) -> str:
-    """A text bar. A live stream has no length, so the bar stays empty."""
-    last = _BAR - 1
-    if length <= 0 or position <= 0:
-        return _BARS[0]
-    if position >= length:
-        return _BARS[last]
-    return _BARS[min(last, max(0, round(position / length * last)))]
-
-
 def progress_text(position: int, length: int) -> str:
     if length <= 0:
         return "live"
     return f"{format_clock(position)} / {format_clock(length)}"
-
-
-def progress_line(position: int, length: int) -> str:
-    """Elapsed time, the bar, then the duration, on one line."""
-    bar = progress_bar(position, length)
-    if length <= 0:
-        return f"live  {bar}"
-    return f"{format_clock(position)}  {bar}  {format_clock(length)}"
 
 
 async def delete_panel(message: discord.Message | None) -> None:
@@ -258,8 +263,25 @@ async def delete_panel(message: discord.Message | None) -> None:
         log.warning("music panel could not close", exc_info=True)
 
 
+def visible_note(line: str) -> str | None:
+    """A plain add stays quiet. The full-queue warning still shows."""
+    if not line.startswith("Added "):
+        return line
+    if line.endswith("The queue is full."):
+        return "The queue is full."
+    return None
+
+
 async def _note(interaction: discord.Interaction, line: str) -> None:
-    await respond(interaction, notice_text(line), ephemeral=True)
+    shown = visible_note(line)
+    if shown is None:
+        if isinstance(interaction, discord.Interaction) and not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except discord.HTTPException:
+                log.warning("music could not close the add note", exc_info=True)
+        return
+    await respond(interaction, notice_text(shown), ephemeral=True)
 
 
 async def show_note(interaction: discord.Interaction, line: str, *, quote: bool = False) -> None:
@@ -282,10 +304,17 @@ async def show_note(interaction: discord.Interaction, line: str, *, quote: bool 
 
 
 async def finish_note(interaction: discord.Interaction, line: str) -> None:
-    """Replace the line from show_note, or send it when that call did not answer."""
+    """Replace the line from show_note, or send it when that call did not answer.
+
+    A plain add removes that line. Nothing stays on screen for it.
+    """
+    shown = visible_note(line)
     if isinstance(interaction, discord.Interaction) and interaction.response.is_done():
         try:
-            await interaction.edit_original_response(content=notice_text(line))
+            if shown is None:
+                await interaction.delete_original_response()
+            else:
+                await interaction.edit_original_response(content=notice_text(shown))
         except discord.HTTPException:
             log.warning("music could not update the note", exc_info=True)
         return
@@ -301,8 +330,8 @@ def _button_rows(count: int, widest: int = 5) -> list[int]:
     return [base + (index < extra) for index in range(rows)]
 
 
-def _row(*items: discord.ui.Item) -> discord.ui.ActionRow:
-    return discord.ui.ActionRow(*items)
+def _row(*items: discord.ui.Item, id: int | None = None) -> discord.ui.ActionRow:
+    return discord.ui.ActionRow(*items, id=id)
 
 
 def _selected(menu: discord.ui.Select) -> str | None:
@@ -483,8 +512,9 @@ class _Press(discord.ui.Button):
         *,
         disabled: bool = False,
         style: discord.ButtonStyle = discord.ButtonStyle.secondary,
+        id: int | None = None,
     ) -> None:
-        super().__init__(label=label, style=style, disabled=disabled)
+        super().__init__(label=label, style=style, disabled=disabled, id=id)
         self.method = method
         self.index = index
 

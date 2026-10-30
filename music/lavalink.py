@@ -19,6 +19,8 @@ _MODES = {"name", "track", "playlist", "draw", "artist"}
 _LINK = {"track", "playlist", "artist"}
 # One attempt is long enough for the session to appear, and short enough to give up.
 _SESSION_TRIES = 50
+# No song, or a paused one, for this long leaves the voice channel. An empty room does not.
+IDLE_SECONDS = 5 * 60
 
 # guild id -> (connect task, channel). A second play waits on the same attempt.
 _joins: dict[int, tuple[asyncio.Task, object]] = {}
@@ -63,7 +65,15 @@ async def connect_node(bot: commands.Bot) -> None:
         log.info("music has no Lavalink node configured")
         return
     # retries=0 because the default loop never returns, and a dead node would block startup.
-    node = wavelink.Node(uri=uri, password=password, client=bot, retries=0)
+    # This wait is the only reason to leave on its own. Pausing uses it too. An empty room stays.
+    node = wavelink.Node(
+        uri=uri,
+        password=password,
+        client=bot,
+        retries=0,
+        inactive_player_timeout=IDLE_SECONDS,
+        inactive_channel_tokens=None,
+    )
     try:
         await wavelink.Pool.connect(nodes=[node], client=bot, cache_capacity=None)
     except wavelink.WavelinkException:
@@ -273,7 +283,12 @@ class GuildPlayer(wavelink.Player):
         if not channel_id and not self._connection_event.is_set():
             log.warning("Discord cleared the voice channel before the link was ready")
             return
+        previous = getattr(self, "channel", None)
         await super().on_voice_state_update(data)
+        # Wavelink replaces the channel with a cache lookup. A miss clears it,
+        # and then everyone already in the room looks like they are outside it.
+        if channel_id and getattr(self, "channel", None) is None:
+            self.channel = _kept_channel(self, previous, channel_id)
         if channel_id:
             await self._dispatch_voice_update()
 
@@ -350,6 +365,37 @@ def _channel_num(value: object | None) -> int | None:
     return number
 
 
+def _state_channel_id(player: object | None) -> int | None:
+    """The channel id kept on the player when its channel object is gone."""
+    state = getattr(player, "_voice_state", None)
+    if not isinstance(state, dict):
+        return None
+    raw = state.get("channel_id")
+    if isinstance(raw, str) and raw.isdecimal():
+        number = int(raw)
+        return number if number > 0 else None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        return None
+    return raw
+
+
+def _kept_channel(player: object, previous: object, channel_id: object) -> object | None:
+    """The channel to keep when the cache lookup comes back empty."""
+    try:
+        wanted = int(channel_id)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if wanted <= 0:
+        return None
+    if _channel_num(previous) == wanted:
+        return previous
+    guild = getattr(player, "guild", None)
+    found = getattr(guild, "get_channel", lambda _id: None)(wanted)
+    if _channel_num(found) == wanted:
+        return found
+    return None
+
+
 def _replaced(player: wavelink.Player) -> bool:
     """A player left by a reload, or tied to a node this process no longer has."""
     if isinstance(player, GuildPlayer):
@@ -423,7 +469,13 @@ async def _join(guild: object, channel: object) -> wavelink.Player | str:
         if isinstance(player, wavelink.Player):
             if _replaced(player):
                 return await _rejoin(player, channel)
-            if player.channel != channel:
+            # Same room, even when the channel object was cleared and only the id remains.
+            linked = _channel_num(getattr(player, "channel", None))
+            if linked is None:
+                linked = _state_channel_id(player)
+            wanted = _channel_num(channel)
+            same = linked is not None and wanted is not None and linked == wanted
+            if not same and getattr(player, "channel", None) != channel:
                 await player.move_to(channel)
             elif isinstance(player, GuildPlayer) and not player._connection_event.is_set():
                 await player.connect(timeout=24, reconnect=True, self_deaf=True)
@@ -436,14 +488,18 @@ async def _join(guild: object, channel: object) -> wavelink.Player | str:
         return "I could not join that voice channel."
 
 
-async def _play_track(player: wavelink.Player, track: object) -> wavelink.Player:
-    """Play this track. A missing session joins again, and the new player is returned."""
+async def _play_track(player: wavelink.Player, track: object, *, start: int = 0) -> wavelink.Player:
+    """Play this track. A missing session joins again, and the new player is returned.
+
+    `start` is where the song begins, in milliseconds. A paused song comes back there.
+    """
+    placed = {"start": start} if start > 0 else {}
     try:
-        await player.play(track)
+        await player.play(track, **placed)
     except wavelink.LavalinkException as exc:
         channel = getattr(player, "channel", None)
         if not _missing_session(exc) or channel is None:
             raise
         player = await _rejoin(player, channel)
-        await player.play(track)
+        await player.play(track, **placed)
     return player

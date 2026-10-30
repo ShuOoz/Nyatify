@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
@@ -21,12 +22,12 @@ from music.panel import (
     song_row,
 )
 from music.play.search import MatchList
-from music.player.view import MusicPlayer
+from music.player.card import MusicPlayer
 from music.playlist.card import LiveLine
 from music.lavalink import Found
 from music.source import NAME_PLATFORM
 
-from tests.music.support import _ask, _defer_marks_done, _named
+from tests.music.support import _ask, _defer_marks_done, _hearing, _named
 from tests.music.play.support import _action_rows, _button, _page_text, _sections
 
 async def test_a_name_lists_songs_until_one_is_added(monkeypatch):
@@ -122,7 +123,10 @@ async def test_a_name_lists_songs_until_one_is_added(monkeypatch):
     assert "Nothing is playing" in press.send.await_args.args[0]
     assert view.is_finished() is False
 
-    monkeypatch.setattr("music.play.now_playing", lambda guild: object())
+    monkeypatch.setattr(
+        "music.play.now_playing",
+        lambda guild: SimpleNamespace(has_track=True),
+    )
     press = _ask()
     await _button(view, LABEL_PLAYER).callback(press)
     started.assert_awaited_once()
@@ -165,9 +169,14 @@ async def test_search_pages_five_songs_at_a_time():
     assert len(_sections(view)) == PAGE
     assert _page_text(view).startswith(page_line(1, 2, 6))
     assert _sections(view)[0].children[0].content == song_row(1, "Song 0", "Artist", 60_000)
+    kept_next = _button(view, MARK_NEXT).custom_id
+    kept_song = _sections(view)[0].accessory.custom_id
 
     press = _ask()
     await _button(view, MARK_NEXT).callback(press)
+    assert _button(view, MARK_NEXT).custom_id == kept_next
+    assert _sections(view)[0].accessory.custom_id == kept_song
+    assert _sections(view)[0].accessory.index == 5
     assert len(_sections(view)) == 1
     assert _sections(view)[0].children[0].content == song_row(6, "Song 5", "Artist", 60_000)
     assert _page_text(view).startswith(page_line(2, 2, 6))
@@ -239,7 +248,7 @@ async def test_adding_a_song_says_so_and_can_open_a_player(monkeypatch):
     _defer_marks_done(press)
     await _sections(view)[0].accessory.callback(press)
     opened.assert_not_awaited()
-    assert "Added Ocean Drive" in press.send.await_args.args[0]
+    press.send.assert_not_awaited()
 
     queued.return_value = "Added Ocean Drive. The queue is full."
     press = _ask()
@@ -247,10 +256,35 @@ async def test_adding_a_song_says_so_and_can_open_a_player(monkeypatch):
     await _sections(view)[0].accessory.callback(press)
     assert "queue is full" in press.send.await_args.args[0]
 
+
+async def test_a_song_already_playing_does_not_say_it_is_starting(monkeypatch):
+    notes = []
+
+    async def show(interaction, line, quote=False):
+        notes.append(line)
+
+    monkeypatch.setattr("music.play.search.show_note", show)
+    monkeypatch.setattr("music.play.now_playing", lambda guild: SimpleNamespace(has_track=True))
+    monkeypatch.setattr("music.play.queue_tracks", AsyncMock(return_value="Added Ocean Drive."))
+    view = MatchList("ocean", "apple", [_named("Ocean Drive")], AsyncMock(), 9)
+    press = _ask()
+    await _sections(view)[0].accessory.callback(press)
+    assert notes == []
+    press.response.defer.assert_awaited()
+    press.send.assert_not_awaited()
+
+    notes.clear()
+    monkeypatch.setattr("music.play.now_playing", lambda guild: None)
+    monkeypatch.setattr("music.play.queue_tracks", AsyncMock(return_value="Playing Ocean Drive."))
+    press = _ask()
+    await _sections(view)[0].accessory.callback(press)
+    assert notes == ["Starting Ocean Drive"]
+
     cog = OsaMusify(MagicMock())
     monkeypatch.setattr(MusicPlayer, "follow", lambda self, message: None)
     sent = MagicMock()
     press = _ask()
+    _hearing(press.guild)
     press.response.is_done.return_value = True
     press.channel.send = AsyncMock(return_value=sent)
     await cog._open_beside(press)
@@ -286,23 +320,30 @@ async def test_an_add_keeps_the_platform_from_the_click(monkeypatch):
 async def test_playlist_and_player_open_beside_the_search(monkeypatch):
     cog = OsaMusify(MagicMock())
     monkeypatch.setattr(MusicPlayer, "follow", lambda self, message: None)
-    monkeypatch.setattr("music.play.now_playing", lambda guild: object())
+    monkeypatch.setattr(
+        "music.play.now_playing",
+        lambda guild: SimpleNamespace(has_track=True),
+    )
+    started = AsyncMock()
     view = MatchList(
         "one wish",
         "apple",
         [_named("One Wish")],
-        cog._show_player,
+        started,
         9,
         on_queue=cog._show_line,
+        on_player=cog._summon_from_card,
     )
     view.to_components()
 
     press = _ask()
+    _hearing(press.guild)
     press.response.send_message = AsyncMock()
     press.original_response = AsyncMock()
     await _button(view, LABEL_PLAYER).callback(press)
     sent = press.response.send_message.await_args.kwargs["view"]
     assert isinstance(sent, MusicPlayer)
+    started.assert_not_awaited()
     press.edit_original_response.assert_not_awaited()
     press.delete_original_response.assert_not_awaited()
     assert view.is_finished() is False

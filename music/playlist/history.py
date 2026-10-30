@@ -8,7 +8,6 @@ import discord
 
 from music.panel import (
     MARK_ADD,
-    _Mark,
     _note,
 )
 
@@ -127,16 +126,10 @@ class _History:
         _start, stop, pages = self._slice(len(picked))
         if not picked:
             line = "-# Nothing of yours yet" if mine is not None else "-# Nothing has played yet"
-            box.add_item(discord.ui.TextDisplay(line))
+            box.add_item(discord.ui.TextDisplay(line, id=16))
         else:
+            method = "on_keep" if self._saving else "on_again"
             for offset, (index, row) in enumerate(picked[_start:stop]):
-                box.add_item(discord.ui.Section(
-                    queue_row(_start + offset + 1, row),
-                    accessory=_Mark(
-                        MARK_ADD,
-                        "on_keep" if self._saving else "on_again",
-                        index,
-                    ),
-                ))
+                self._show_slot(box, offset, queue_row(_start + offset + 1, row), MARK_ADD, method, index)
         visible = [row for _index, row in picked]
         return pages, len(visible), _span(visible), _song_noun(len(visible))

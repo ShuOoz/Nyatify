@@ -5,11 +5,13 @@ from music.playback.control import (
     advance_from_end,
     change_volume,
     next_track,
-    nudge,
     previous_track,
     repeat_track,
-    suggest_next,
+    set_volume,
+    shuffle_queue,
+    toggle_radio,
     toggle_pause,
+    tune_track,
 )
 from music.playback.arrange import (
     clear_played,
@@ -26,6 +28,7 @@ from music.playback.arrange import (
 )
 from music.playback.start import (
     leave_if_idle,
+    leave_if_quiet,
     load_line,
     play_now,
     queue_opened,
@@ -35,7 +38,6 @@ from music.playback.start import (
 )
 from music.playback.remember import (
     HISTORY_SONGS,
-    JUMP_MS,
     QUEUE_SONGS,
     VOLUME_STEP,
     PlayState,
@@ -60,7 +62,6 @@ from music.playback.remember import (
 
 __all__ = [
     "HISTORY_SONGS",
-    "JUMP_MS",
     "QUEUE_SONGS",
     "VOLUME_STEP",
     "PlayState",
@@ -75,13 +76,13 @@ __all__ = [
     "find_songs",
     "finish_saved",
     "leave_if_idle",
+    "leave_if_quiet",
     "load_line",
     "load_saved_lines",
     "member_in_voice",
     "move_queued",
     "next_track",
     "now_playing",
-    "nudge",
     "open_one",
     "play_now",
     "play_saved",
@@ -95,10 +96,13 @@ __all__ = [
     "release",
     "repeat_track",
     "save_open_lines",
+    "set_volume",
+    "shuffle_queue",
     "skipped_songs",
     "stop_track",
-    "suggest_next",
+    "toggle_radio",
     "toggle_pause",
+    "tune_track",
     "unwatch_line",
     "warm_voice",
     "watch_line",

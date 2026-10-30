@@ -111,7 +111,7 @@ def fresh(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _no_proxy(monkeypatch):
-    """A proxy in config.txt must not reach test HTTP."""
+    """A proxy or Last.fm key in config.txt must not reach test HTTP."""
     from config import settings as live_settings
 
     monkeypatch.setattr(live_settings, "bili_proxy", None)
@@ -122,6 +122,7 @@ def _no_proxy(monkeypatch):
     monkeypatch.setattr(live_settings, "weibo_proxies", ())
     monkeypatch.setattr(live_settings, "ai_proxy", None)
     monkeypatch.setattr(live_settings, "ip_check", False)
+    monkeypatch.setattr(live_settings, "lastfm_api_key", None)
 
 
 @pytest.fixture

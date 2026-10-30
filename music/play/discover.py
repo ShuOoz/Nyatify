@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 
 import discord
@@ -36,6 +37,10 @@ PICK_SONG = "**Pick a random song**"
 PICK_RADIO = "**Pick a radio station**"
 PICK_LIST = "**Pick a playlist**"
 
+# Spotify refreshes a genre list about once a week, so one open lasts the day.
+_DAY = 24 * 60 * 60
+_kept: dict[str, tuple[float, object]] = {}
+
 # Short names stay on the first row, so a phone can keep that row on one line.
 _GENRE_ROWS = (
     ("Pop", "Jazz", "Rock", "R&B"),
@@ -49,7 +54,7 @@ def _pkg():
 
 
 class _Pick(discord.ui.Button):
-    """A genre button. No phrase means any genre."""
+    """A genre button. No list means any genre."""
 
     def __init__(self, label: str, phrase: str | None = None) -> None:
         super().__init__(label=label, style=discord.ButtonStyle.secondary)
@@ -71,6 +76,18 @@ def _genre_buttons() -> list[_Pick]:
     if set(labels) != set(phrases) or len(labels) != len(phrases):
         raise ValueError("genre rows do not match the genre list")
     return [_Pick(label, phrases[label]) for label in labels]
+
+
+def _saved_list(url: str):
+    """The songs opened earlier today. A later press does not read the list again."""
+    row = _kept.get(url)
+    if row is None:
+        return None
+    opened, found = row
+    if time.monotonic() - opened >= _DAY:
+        _kept.pop(url, None)
+        return None
+    return found
 
 
 def _saved_lists(guild: object | None, store: object | None) -> list:
@@ -334,9 +351,53 @@ class GenreList(_SearchCard):
             return None
         return found.tracks[0]
 
+    async def _genre_list(self, guild: object, url: str):
+        """The weekly list. A list opened earlier today is not read again."""
+        found = _saved_list(url)
+        if found is not None:
+            return found
+        try:
+            found = await _pkg().find_songs(guild, url)
+        except Exception:
+            log.exception("music genre list failed")
+            return "Something went wrong while starting the song."
+        if not isinstance(found, str):
+            _kept[url] = (time.monotonic(), found)
+        return found
+
     async def on_any(self, interaction: discord.Interaction) -> None:
-        _label, phrase = _pkg().random.choice(GENRES)
-        await self.on_genre(interaction, phrase)
+        async with self._session(interaction) as arm:
+            if arm is None:
+                return
+            arm()
+            self.rows.content = "Picking a song…"
+            try:
+                await self._restore(interaction)
+                # One song from the weekly lists, whichever genre it belongs to.
+                opened = await asyncio.gather(
+                    *(self._genre_list(interaction.guild, url) for _label, url in GENRES)
+                )
+                songs = []
+                platform = "spotify"
+                trouble = "Nothing on Spotify matched that."
+                for found in opened:
+                    if isinstance(found, str):
+                        trouble = found
+                        continue
+                    platform = found.platform
+                    songs.extend(found.tracks)
+                if not songs:
+                    await _note(interaction, trouble)
+                    return
+                await _play_or_note(
+                    interaction,
+                    [_pkg().random.choice(songs)],
+                    platform,
+                    self.on_started,
+                )
+            finally:
+                self.rows.content = PICK_SONG
+                await self._restore(interaction)
 
     async def on_genre(self, interaction: discord.Interaction, phrase: str) -> None:
         async with self._session(interaction) as arm:
@@ -346,14 +407,7 @@ class GenreList(_SearchCard):
             self.rows.content = "Picking a song…"
             try:
                 await self._restore(interaction)
-                try:
-                    found = await _pkg().find_songs(
-                        interaction.guild, phrase, self.platform, mode="draw",
-                    )
-                except Exception:
-                    log.exception("music genre search failed")
-                    await _note(interaction, "Something went wrong while starting the song.")
-                    return
+                found = await self._genre_list(interaction.guild, phrase)
                 if isinstance(found, str):
                     await _note(interaction, found)
                     return

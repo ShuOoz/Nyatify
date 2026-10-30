@@ -1,4 +1,4 @@
-"""Play, the player, playlists, and stop. No Discord login and no Lavalink node."""
+"""Play, the player, and playlists. No Discord login and no Lavalink node."""
 
 from __future__ import annotations
 
@@ -12,19 +12,19 @@ from guild import GuildConfig, guild_config
 from music.panel import MARK_SEARCH, PANEL_SECONDS
 from music.play.discover import EMPTY_SECONDS, GenreList
 from music.play.search import MatchList
-from music.player.view import MusicPlayer
+from music.player.card import MusicPlayer
 from music.playlist.card import LiveLine
-from music.lavalink import Found
-from music.playback import queue_tracks, queued, release, stop_track, _stored
+from music.lavalink import IDLE_SECONDS, Found
+from music.playback import queue_tracks, stop_track, toggle_pause, _stored
 from music.source import NAME_PLATFORM
 
-from tests.music.support import _Player, _ask, _named, _person, _playing, _press
+from tests.music.support import _Player, _ask, _hearing, _named, _person, _playing, _press
 from tests.music.play.support import _button
 from tests.music.playlist.support import _line_up, _text
 
-def test_commands_are_play_and_stop():
+def test_commands_are_play_player_and_playlist():
     names = {command.name for command in OsaMusify.music.walk_commands()}
-    assert names == {"play", "player", "playlist", "stop"}
+    assert names == {"play", "player", "playlist"}
     assert OsaMusify.music.name == "music"
     shown = next(command for command in OsaMusify.music.walk_commands() if command.name == "player")
     assert shown.description == "Show the music player"
@@ -93,7 +93,7 @@ async def test_a_kick_forgets_the_line_and_the_card(monkeypatch):
         async def no_wait(_seconds):
             return None
 
-        monkeypatch.setattr("music.player.view.asyncio.sleep", no_wait)
+        monkeypatch.setattr("music.player.sync.asyncio.sleep", no_wait)
         guild.voice_client = player
         lingering = MusicPlayer(guild)
         lingering.message = message
@@ -105,6 +105,76 @@ async def test_a_kick_forgets_the_line_and_the_card(monkeypatch):
         assert lingering._closed is True
     finally:
         guild.voice_client = None
+
+
+async def test_five_quiet_minutes_leave_and_close_the_player():
+    guild, player, _track = await _playing()
+    try:
+        cog = OsaMusify(MagicMock())
+        card = MusicPlayer(guild)
+        message = MagicMock()
+        message.delete = AsyncMock()
+        card.message = message
+        cog._panels.append(card)
+        player._guild = guild
+
+        await cog.on_wavelink_inactive_player(player)
+        player.disconnect.assert_not_awaited()
+        message.delete.assert_not_awaited()
+        assert card._closed is False
+
+        player._track = None
+        _stored(guild).current = None
+        await cog.on_wavelink_inactive_player(player)
+        player.disconnect.assert_awaited_once()
+        message.delete.assert_awaited_once()
+        assert card._closed is True
+    finally:
+        guild.voice_client = None
+        await stop_track(guild)
+
+
+async def test_five_paused_minutes_leave_and_close_the_player(monkeypatch):
+    guild, player, _track = await _playing()
+    try:
+        cog = OsaMusify(MagicMock())
+        card = MusicPlayer(guild)
+        message = MagicMock()
+        message.delete = AsyncMock()
+        card.message = message
+        cog._panels.append(card)
+        player._guild = guild
+        seen: list[float] = []
+
+        async def no_wait(seconds):
+            seen.append(seconds)
+            return None
+
+        monkeypatch.setattr("music.playback.start._wait", no_wait)
+        finished = asyncio.Event()
+
+        def dispatch(event, target):
+            assert event == "wavelink_inactive_player"
+            assert target is player
+
+            async def run():
+                await cog.on_wavelink_inactive_player(target)
+                finished.set()
+
+            asyncio.create_task(run())
+
+        player.client = MagicMock()
+        player.client.dispatch = dispatch
+        assert await toggle_pause(guild) is None
+        await asyncio.wait_for(finished.wait(), timeout=1)
+        assert seen == [IDLE_SECONDS]
+        player.disconnect.assert_awaited_once()
+        message.delete.assert_awaited_once()
+        assert card._closed is True
+    finally:
+        guild.voice_client = None
+        await stop_track(guild)
+
 
 async def test_play_opens_genres_a_list_or_the_song(monkeypatch):
     cog = OsaMusify(MagicMock())
@@ -150,6 +220,7 @@ async def test_play_opens_genres_a_list_or_the_song(monkeypatch):
     search.return_value = Found("https://open.spotify.com/track/abc", "spotify", [link], True)
     queued.return_value = "Playing Ocean Drive."
     interaction.channel.send = AsyncMock(return_value=MagicMock())
+    _hearing(interaction.guild)
     await cog.play.callback(cog, interaction, "https://open.spotify.com/track/abc")
     queued.assert_awaited_once()
     assert queued.await_args.args[2] == [link]
@@ -169,9 +240,8 @@ async def test_play_opens_genres_a_list_or_the_song(monkeypatch):
     await cog.play.callback(cog, interaction, "https://open.spotify.com/track/abc")
     queued.assert_awaited_once()
     assert len(cog._panels) == panels
-    answered = interaction.edit_original_response.await_args.kwargs
-    assert "Added Ocean Drive" in answered["content"]
-    assert answered["view"] is None
+    interaction.delete_original_response.assert_awaited_once()
+    interaction.edit_original_response.assert_not_awaited()
 
     interaction = _ask()
     interaction.response.is_done.return_value = True
@@ -384,10 +454,10 @@ async def test_a_link_from_the_playlist_leaves_that_card(monkeypatch):
     press.followup.send = AsyncMock()
     press.channel.send = AsyncMock()
     await cog._search(press, "https://open.spotify.com/track/abc", fresh=True)
-    press.delete_original_response.assert_not_awaited()
+    press.delete_original_response.assert_awaited_once()
     press.edit_original_response.assert_not_awaited()
     press.channel.send.assert_not_awaited()
-    assert "Added Ocean Drive" in press.send.await_args.args[0]
+    press.send.assert_not_awaited()
     play_message.delete.assert_not_awaited()
     assert play.is_finished() is False
     assert cog._browse[(31, 9)] is play
@@ -403,6 +473,7 @@ async def test_a_link_from_the_playlist_leaves_that_card(monkeypatch):
 
     queued.return_value = "Playing Ocean Drive."
     press = _person(9)
+    _hearing(press.guild)
     press.response.is_done.return_value = True
     sent = MagicMock()
     press.channel.send = AsyncMock(return_value=sent)
@@ -640,6 +711,7 @@ async def test_two_player_opens_leave_one_card(monkeypatch):
     cog = OsaMusify(MagicMock())
     guild = MagicMock()
     guild.id = 31
+    _hearing(guild)
     started = asyncio.Event()
     release = asyncio.Event()
     opened: list[MusicPlayer] = []
@@ -685,6 +757,7 @@ async def test_a_failed_player_leaves_the_play_card(monkeypatch):
     assert isinstance(view, GenreList)
 
     failed = _person(9)
+    _hearing(failed.guild)
     failed.response.is_done.return_value = True
     failed.channel.send = AsyncMock(side_effect=discord.HTTPException(MagicMock(status=500), "no"))
     await view.on_started(failed)
@@ -697,6 +770,7 @@ async def test_a_failed_player_send_keeps_the_open_one(monkeypatch):
     cog = OsaMusify(MagicMock())
     guild = MagicMock()
     guild.id = 31
+    _hearing(guild)
     old = MusicPlayer(guild, discard=cog._forget_panel)
     old.message = MagicMock()
     old.message.delete = AsyncMock()
@@ -722,7 +796,78 @@ async def test_a_failed_player_send_keeps_the_open_one(monkeypatch):
     assert cog._panels[0] is not old
     cog._panels[0].shutdown()
 
-async def test_one_playlist_card_per_person():
+async def test_the_cross_keeps_the_next_song_from_posting_the_player(monkeypatch):
+    monkeypatch.setattr(MusicPlayer, "follow", lambda self, message: None)
+    guild, _player, _track = await _playing()
+    cog = OsaMusify(MagicMock())
+    try:
+        press = _ask()
+        press.guild = guild
+        press.response.is_done.return_value = True
+        sent = MagicMock()
+        sent.delete = AsyncMock()
+        press.channel.send = AsyncMock(return_value=sent)
+        await cog._show_player(press)
+        card = cog._panels[0]
+        closer = _ask()
+        closer.guild = guild
+        closer.response.defer = AsyncMock()
+        closer.response.is_done.return_value = False
+        closer.delete_original_response = AsyncMock()
+        await card.on_close(closer)
+        closer.delete_original_response.assert_awaited()
+        assert card._closed is True
+        assert cog._panels == []
+
+        again = _ask()
+        again.guild = guild
+        again.response.is_done.return_value = True
+        again.channel.send = AsyncMock()
+        await cog._open_beside(again)
+        await cog._open_from_card(again)
+        again.channel.send.assert_not_awaited()
+        assert cog._panels == []
+
+        shown = _ask()
+        shown.guild = guild
+        shown.response.is_done.return_value = False
+        shown.response.send_message = AsyncMock()
+        posted = MagicMock()
+        posted.delete = AsyncMock()
+        shown.original_response = AsyncMock(return_value=posted)
+        await cog.player.callback(cog, shown)
+        assert isinstance(shown.response.send_message.await_args.kwargs["view"], MusicPlayer)
+        assert len(cog._panels) == 1
+
+        later = _ask()
+        later.guild = guild
+        later.response.is_done.return_value = True
+        later.channel.send = AsyncMock(return_value=MagicMock())
+        await cog._show_player(later)
+        later.channel.send.assert_awaited()
+    finally:
+        for panel in list(cog._panels):
+            panel.shutdown()
+        await stop_track(guild)
+
+async def test_the_player_command_stays_down_when_the_song_is_over():
+    guild, player, _track = await _playing()
+    cog = OsaMusify(MagicMock())
+    try:
+        player._track = None
+        press = _ask()
+        press.guild = guild
+        press.response.is_done.return_value = False
+        press.send = AsyncMock()
+        await cog.player.callback(cog, press)
+        assert "Nothing is playing" in press.send.await_args.args[0]
+        assert cog._panels == []
+    finally:
+        if guild.voice_client is not None:
+            await stop_track(guild)
+
+
+async def test_one_public_playlist_card_per_server():
     cog = OsaMusify(MagicMock())
     first_message = MagicMock()
     first_message.id = 1
@@ -733,6 +878,9 @@ async def test_one_playlist_card_per_person():
     second_message = MagicMock()
     second_message.id = 3
     second_message.delete = AsyncMock()
+    elsewhere_message = MagicMock()
+    elsewhere_message.id = 4
+    elsewhere_message.delete = AsyncMock()
     first = _ask()
     first.guild.id = 31
     first.user.id = 7
@@ -741,7 +889,7 @@ async def test_one_playlist_card_per_person():
     first.original_response = AsyncMock(return_value=first_message)
     await cog.playlist.callback(cog, first)
     opened = first.response.send_message.await_args.kwargs["view"]
-    assert first.response.send_message.await_args.kwargs["ephemeral"] is True
+    assert "ephemeral" not in first.response.send_message.await_args.kwargs
 
     other = _ask()
     other.guild.id = 31
@@ -750,11 +898,23 @@ async def test_one_playlist_card_per_person():
     other.response.is_done.return_value = False
     other.original_response = AsyncMock(return_value=other_message)
     await cog.playlist.callback(cog, other)
-    first_message.delete.assert_not_awaited()
-    assert opened.is_finished() is False
+    first_message.delete.assert_awaited_once()
+    assert opened.is_finished() is True
     theirs = other.response.send_message.await_args.kwargs["view"]
-    assert cog._lines[(31, 7)] is opened
-    assert cog._lines[(31, 8)] is theirs
+    assert cog._lines[31] is theirs
+
+    elsewhere = _ask()
+    elsewhere.guild.id = 44
+    elsewhere.user.id = 7
+    elsewhere.response.send_message = AsyncMock()
+    elsewhere.response.is_done.return_value = False
+    elsewhere.original_response = AsyncMock(return_value=elsewhere_message)
+    await cog.playlist.callback(cog, elsewhere)
+    other_message.delete.assert_not_awaited()
+    assert theirs.is_finished() is False
+    other_server = elsewhere.response.send_message.await_args.kwargs["view"]
+    assert cog._lines[44] is other_server
+    assert cog._lines[31] is theirs
 
     second = _ask()
     second.guild.id = 31
@@ -763,16 +923,42 @@ async def test_one_playlist_card_per_person():
     second.response.is_done.return_value = False
     second.original_response = AsyncMock(return_value=second_message)
     await cog.playlist.callback(cog, second)
-    first_message.delete.assert_awaited_once()
-    other_message.delete.assert_not_awaited()
-    assert opened.is_finished() is True
-    assert theirs.is_finished() is False
+    other_message.delete.assert_awaited_once()
+    elsewhere_message.delete.assert_not_awaited()
+    assert theirs.is_finished() is True
+    assert other_server.is_finished() is False
     again = second.response.send_message.await_args.kwargs["view"]
-    assert second.response.send_message.await_args.kwargs["ephemeral"] is True
-    assert cog._lines[(31, 7)] is again
-    assert cog._lines[(31, 8)] is theirs
+    assert "ephemeral" not in second.response.send_message.await_args.kwargs
+    assert cog._lines[31] is again
+    assert cog._lines[44] is other_server
     again.stop()
-    theirs.stop()
+    other_server.stop()
+
+
+async def test_a_failed_playlist_send_keeps_the_open_one():
+    cog = OsaMusify(MagicMock())
+    first_message = MagicMock()
+    first_message.id = 1
+    first_message.delete = AsyncMock()
+    first = _ask()
+    first.guild.id = 31
+    first.response.send_message = AsyncMock()
+    first.response.is_done.return_value = False
+    first.original_response = AsyncMock(return_value=first_message)
+    await cog.playlist.callback(cog, first)
+    opened = first.response.send_message.await_args.kwargs["view"]
+
+    failed = _ask()
+    failed.guild.id = 31
+    failed.response.send_message = AsyncMock(
+        side_effect=discord.HTTPException(MagicMock(status=500), "no"),
+    )
+    failed.response.is_done.return_value = True
+    await cog.playlist.callback(cog, failed)
+    first_message.delete.assert_not_awaited()
+    assert opened.is_finished() is False
+    assert cog._lines[31] is opened
+    opened.stop()
 
 async def test_playlist_shows_the_line(monkeypatch, tmp_path):
     assert OsaMusify(MagicMock()).guild_config is guild_config
@@ -807,77 +993,3 @@ async def test_playlist_shows_the_line(monkeypatch, tmp_path):
         if shown is not None:
             shown.stop()
         await stop_track(guild)
-
-async def test_stop_leaves_a_parked_queue():
-    guild = MagicMock()
-    guild.id = 44
-    guild.voice_client = None
-    await stop_track(guild)
-    channel = MagicMock()
-    channel.id = 19
-    player = _Player(channel)
-    channel.connect = AsyncMock(return_value=player)
-
-    async def play(track):
-        player._track = track
-
-    player.play.side_effect = play
-    member = MagicMock()
-    member.id = 8
-    member.voice.channel = channel
-    cog = OsaMusify(MagicMock())
-    try:
-        assert await queue_tracks(member, guild, [_named("Alpha"), _named("Beta")]) == "Playing Alpha."
-        guild.voice_client = player
-        release(guild)
-        guild.voice_client = None
-        press = _ask()
-        press.guild = guild
-        press.user = member
-        await cog.stop.callback(cog, press)
-        assert "Nothing is playing" in press.send.await_args.args[0]
-        assert [row.title for row in queued(guild)] == ["Alpha", "Beta"]
-    finally:
-        await stop_track(guild)
-
-async def test_a_failed_stop_keeps_the_player(monkeypatch):
-    monkeypatch.setattr(MusicPlayer, "follow", lambda self, message: None)
-    cog = OsaMusify(MagicMock())
-    guild = MagicMock()
-    guild.id = 31
-    card = MusicPlayer(guild, discard=cog._forget_panel)
-    card.message = MagicMock()
-    card.message.delete = AsyncMock()
-    cog._panels.append(card)
-    channel = MagicMock()
-    channel.id = 19
-    guild.voice_client.channel = channel
-
-    outsider = _ask()
-    outsider.guild = guild
-    outsider.user.voice = None
-    await cog.stop.callback(cog, outsider)
-    assert "Join the voice channel first" in outsider.send.await_args.args[0]
-    assert card._closed is False
-
-    async def boom(_guild):
-        raise RuntimeError("voice")
-
-    monkeypatch.setattr("cogs.osa_musify.stop_track", boom)
-    press = _ask()
-    press.guild = guild
-    press.user.voice.channel = channel
-    press.response.is_done.return_value = True
-    await cog.stop.callback(cog, press)
-    assert card._closed is False
-    card.message.delete.assert_not_awaited()
-    assert "stopping the song" in press.edit_original_response.await_args.kwargs["content"]
-
-    async def stopped(_guild):
-        return "Stopped."
-
-    monkeypatch.setattr("cogs.osa_musify.stop_track", stopped)
-    await cog.stop.callback(cog, press)
-    assert card._closed is True
-    card.message.delete.assert_awaited_once()
-    assert cog._panels == []

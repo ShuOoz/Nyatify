@@ -16,6 +16,7 @@ from announce import (
     ACCENT_COLOR,
     CommandTarget,
     command_error_message,
+    defer_response,
     notice_text,
     owner_only,
     respond,
@@ -252,6 +253,9 @@ class Admin(AnnounceCommands, commands.Cog):
         elif action == "unload":
             await self.bot.unload_extension(extension)
         else:
+            # Discord forgets the interaction after 3 seconds. Music waits on
+            # Lavalink inside cog load, so acknowledge before that wait.
+            await defer_response(interaction)
             # Feature modules stay put until this cog is actually loaded. News
             # modules are imported by shared code, so reloading them for a cog
             # that is not running would change voice and music underneath.

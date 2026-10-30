@@ -13,6 +13,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, TypeVar, cast
 
 from config import BASE_DIR, write_text_atomic
 from guild import GuildConfig
@@ -161,7 +162,8 @@ def save_song(
         return f"{stored.title} is already in the playlist."
     if len(saved.songs) >= SONG_LIMIT:
         return f"A playlist keeps {SONG_LIMIT} songs."
-    updated = SavedList(saved.name, saved.saver_id, saved.songs + (stored,))
+    # The newest song stays at the top. The rest keep their order.
+    updated = SavedList(saved.name, saved.saver_id, (stored,) + saved.songs)
     shelf.lists[place] = updated
     shelf.write()
     return updated
@@ -291,11 +293,26 @@ def _saver(value: object) -> int | None:
 
 # Line record. The queue and the history, stored in data/music_session.json.
 
-PATH = BASE_DIR / "data" / "music_session.json"
+T = TypeVar("T")
+
+
+def _keep_loaded(name: str, default: T, namespace: dict[str, Any]) -> T:
+    """Keep a value a reload would otherwise replace.
+
+    Importing this module again is how a cog reload picks up new code. The
+    session file path and the copy already in memory have to stay, or the next
+    write lands on a different file.
+    """
+    if name not in namespace:
+        return default
+    return cast(T, namespace[name])
+
+
+PATH = _keep_loaded("PATH", BASE_DIR / "data" / "music_session.json", globals())
 _PREVIOUS_NAME = "music_line.json"
 
-_cache_path: Path | None = None
-_book: dict[str, dict] | None = None
+_cache_path: Path | None = _keep_loaded("_cache_path", None, globals())
+_book: dict[str, dict] | None = _keep_loaded("_book", None, globals())
 
 
 def _adopt_previous(path: Path, previous_name: str) -> None:

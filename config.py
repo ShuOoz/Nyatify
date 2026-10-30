@@ -131,6 +131,8 @@ class Settings:
         # music plays through this Lavalink node. Empty leaves play unable to start.
         self.lavalink_uri = text("LAVALINK_URI") or None
         self.lavalink_password = text("LAVALINK_PASSWORD") or None
+        # Optional. Radio asks Last.fm for a similar song. Empty keeps the title search.
+        self.lastfm_api_key = text("LASTFM_API_KEY") or None
 
     def require_token(self) -> str:
         if not self.token:

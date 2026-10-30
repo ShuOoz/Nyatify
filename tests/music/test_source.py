@@ -10,6 +10,8 @@ from music.lavalink import Found, find_songs
 from music.source import (
     GENRES,
     MATCHES,
+    apple_album,
+    spotify_album,
     canonical_url,
     import_link,
     needs_redirect,
@@ -51,16 +53,28 @@ def test_a_link_keeps_its_shape():
     assert request_mode("https://open.spotify.com/artist/abc") == "artist"
     assert request_mode("https://music.apple.com/us/artist/name/1") == "artist"
     assert request_mode("https://music.apple.com/us/album/animals/1533388849?i=1533388859") == "track"
+    assert apple_album("https://music.apple.com/us/album/chet-baker-sings/1440812340?i=1440811111") == (
+        "Chet Baker Sings",
+        "https://music.apple.com/us/album/chet-baker-sings/1440812340",
+    )
+    assert apple_album("https://music.apple.com/us/song/its-always-you/1") is None
+    assert spotify_album("spotify:album:abc") == "https://open.spotify.com/album/abc"
+    assert spotify_album("https://open.spotify.com/intl-de/album/abc?si=1") == (
+        "https://open.spotify.com/album/abc"
+    )
+    assert spotify_album("https://open.spotify.com/track/abc") is None
+    assert spotify_album("https://i.scdn.co/image/ab") is None
     assert import_link("https://music.apple.com/us/album/animals/1533388849?i=1533388859") is None
     assert request_mode("https://soundcloud.com/user/album-of-the-year") == "track"
     assert request_mode("https://soundcloud.com/user/artist-name") == "track"
     assert request_mode("https://soundcloud.com/user/playlist-night") == "track"
     assert request_mode("https://music.apple.com/us/song/artists-choice/1") == "track"
     assert request_mode("https://open.spotify.com/intl-de/album/abc") == "playlist"
-    assert ("Jazz", "jazz piano") in GENRES
-    assert ("Rock", "classic rock") in GENRES
-    assert all(len(phrase.split()) >= 2 for _, phrase in GENRES)
-    assert all(phrase != label.casefold() for label, phrase in GENRES)
+    lists = dict(GENRES)
+    assert lists["Jazz"] == "https://open.spotify.com/playlist/37i9dQZF1DXcWL5K0oNHcG"
+    assert lists["Rock"] == "https://open.spotify.com/playlist/37i9dQZF1DWZryfp6NSvtz"
+    assert all(request_mode(url) == "playlist" for url in lists.values())
+    assert all(url.startswith("https://open.spotify.com/playlist/") for url in lists.values())
 
 def test_track_query_keeps_names_and_supported_links():
     assert track_query("  ocean   drive ") == "ocean drive"

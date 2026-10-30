@@ -76,3 +76,6 @@ AI_ON_POLL=0
 # Example URI: http://127.0.0.1:2333
 LAVALINK_URI=
 LAVALINK_PASSWORD=
+# Optional. The player radio button asks Last.fm for a similar song.
+# Empty keeps searching the current title. https://www.last.fm/api/account/create
+LASTFM_API_KEY=

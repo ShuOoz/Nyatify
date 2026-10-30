@@ -12,14 +12,13 @@ from discord.ext import commands
 
 from announce import defer_response, notice_text, quote_text, respond
 from guild import GuildConfig, guild_config as default_guild_config
-from music.panel import delete_panel, show_note
+from music.panel import delete_panel, show_note, visible_note
 from music.play import GenreList, MatchList
-from music.player.view import MusicPlayer
+from music.player.card import MusicPlayer
 from music.playlist.card import LiveLine
 from music.lavalink import connect_node, find_songs
 from music.playback import (
     advance_from_end,
-    member_in_voice,
     now_playing,
     playing_note,
     load_saved_lines,
@@ -27,8 +26,8 @@ from music.playback import (
     refresh_line,
     release,
     save_open_lines,
-    stop_track,
     leave_if_idle,
+    leave_if_quiet,
     warm_voice,
 )
 from music.source import NAME_PLATFORM, is_link, track_query
@@ -51,10 +50,13 @@ class OsaMusify(commands.Cog):
         self.bot = bot
         self.guild_config = default_guild_config if guild_config is None else guild_config
         self._panels: list[MusicPlayer] = []
+        # The cross hides the player until someone opens it on purpose.
+        self._quiet: set[int] = set()
         self._player_locks: dict[int, asyncio.Lock] = {}
-        # Each person has their own play card and their own playlist card.
+        self._line_locks: dict[int, asyncio.Lock] = {}
+        # Each person has their own play card. The playlist is one channel message.
         self._browse: dict[tuple[int, int], discord.ui.LayoutView] = {}
-        self._lines: dict[tuple[int, int], LiveLine] = {}
+        self._lines: dict[int, LiveLine] = {}
 
     async def cog_load(self) -> None:
         load_saved_lines()
@@ -85,7 +87,19 @@ class OsaMusify(commands.Cog):
             return
         release(member.guild)
         await refresh_line(member.guild)
-        guild_id = getattr(member.guild, "id", None)
+        await self._dismiss_player(member.guild)
+
+    @commands.Cog.listener()
+    async def on_wavelink_inactive_player(self, player: object) -> None:
+        """Five minutes with no song, or five minutes paused. Leave, and take the player card."""
+        guild = getattr(player, "guild", None)
+        if not await leave_if_quiet(guild):
+            return
+        await refresh_line(guild)
+        await self._dismiss_player(guild)
+
+    async def _dismiss_player(self, guild: object | None) -> None:
+        guild_id = getattr(guild, "id", None)
         for panel in list(self._panels):
             if getattr(panel.guild, "id", None) == guild_id and not panel._closed:
                 await panel.dismiss()
@@ -249,6 +263,7 @@ class OsaMusify(commands.Cog):
                 on_playing=self._open_beside,
                 note=note,
                 on_search=self._search,
+                on_player=self._summon_from_card,
             )
             if fresh:
                 # A new message, so the play card is the latest one. The asker stays up.
@@ -378,12 +393,12 @@ class OsaMusify(commands.Cog):
 
     @music.command(name="player", description="Show the music player")
     async def player(self, interaction: discord.Interaction) -> None:
-        # Still in the voice channel after a song ends is enough. A second card
-        # would refresh on its own, so the open one is dismissed and posted again.
-        if now_playing(interaction.guild) is None:
+        # A second card would refresh on its own, so the open one is dismissed
+        # and posted again. An empty room gets a line, not a player.
+        if not _on_now(interaction.guild):
             await respond(interaction, notice_text("Nothing is playing."))
             return
-        await self._show_player(interaction)
+        await self._show_player(interaction, summon=True)
 
     async def _open_beside(self, interaction: discord.Interaction) -> None:
         """A player next to the search card. The search card stays where it is."""
@@ -393,15 +408,37 @@ class OsaMusify(commands.Cog):
         """Open the player from a card that should stay on screen."""
         await self._show_player(interaction, keep=True)
 
+    async def _summon_from_card(self, interaction: discord.Interaction) -> None:
+        """The Player button. A closed player is allowed to come back."""
+        await self._show_player(interaction, keep=True, summon=True)
+
     def _player_lock(self, guild: object | None) -> asyncio.Lock:
         """One open at a time per server, so two starts cannot leave two players."""
+        return self._guild_lock(self._player_locks, guild)
+
+    def _guild_lock(self, locks: dict[int, asyncio.Lock], guild: object | None) -> asyncio.Lock:
         guild_id = _guild_num(guild)
         key = guild_id if guild_id is not None else id(guild)
-        lock = self._player_locks.get(key)
+        lock = locks.get(key)
         if lock is None:
             lock = asyncio.Lock()
-            self._player_locks[key] = lock
+            locks[key] = lock
         return lock
+
+    def _quiet_player(self, panel: MusicPlayer) -> None:
+        """The cross. The next songs leave the channel alone."""
+        guild_id = _guild_num(panel.guild)
+        if guild_id is not None:
+            self._quiet.add(guild_id)
+
+    def _player_quiet(self, guild: object | None) -> bool:
+        guild_id = _guild_num(guild)
+        return guild_id is not None and guild_id in self._quiet
+
+    def _allow_player(self, guild: object | None) -> None:
+        guild_id = _guild_num(guild)
+        if guild_id is not None:
+            self._quiet.discard(guild_id)
 
     async def _show_player(
         self,
@@ -409,9 +446,10 @@ class OsaMusify(commands.Cog):
         *,
         beside: bool = False,
         keep: bool = False,
+        summon: bool = False,
     ) -> None:
         async with self._player_lock(interaction.guild):
-            await self._post_player(interaction, beside=beside, keep=keep)
+            await self._post_player(interaction, beside=beside, keep=keep, summon=summon)
 
     async def _post_player(
         self,
@@ -419,14 +457,31 @@ class OsaMusify(commands.Cog):
         *,
         beside: bool,
         keep: bool,
+        summon: bool,
     ) -> None:
+        if summon:
+            self._allow_player(interaction.guild)
+        elif self._player_quiet(interaction.guild):
+            # The cross already put this card away. A new song must not post it.
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+            return
+        if not _on_now(interaction.guild):
+            if not interaction.response.is_done():
+                await respond(interaction, notice_text("Nothing is playing."))
+            return
         prior = self._card(interaction.guild)
         if beside and prior is not None:
             await prior.redraw()
             return
         # Send the new card before dismissing the old one. A failed send then
         # leaves the player that was already in the channel.
-        panel = MusicPlayer(interaction.guild, discard=self._forget_panel)
+        panel = MusicPlayer(
+            interaction.guild,
+            discard=self._forget_panel,
+            conceal=self._quiet_player,
+            store=self.guild_config,
+        )
         mentions = discord.AllowedMentions.none()
         try:
             if interaction.response.is_done():
@@ -438,10 +493,18 @@ class OsaMusify(commands.Cog):
                     panel.shutdown()
                     await _player_error(interaction, keep)
                     return
-                panel.follow(await channel.send(view=panel, allowed_mentions=mentions))
+                posted = await channel.send(
+                    view=panel, allowed_mentions=mentions, **_bar_file(panel),
+                )
+                panel.follow(posted)
+                await panel._cite(posted)
             else:
-                await interaction.response.send_message(view=panel, allowed_mentions=mentions)
-                panel.follow(await interaction.original_response())
+                await interaction.response.send_message(
+                    view=panel, allowed_mentions=mentions, **_bar_file(panel),
+                )
+                posted = await interaction.original_response()
+                panel.follow(posted)
+                await panel._cite(posted)
         except discord.HTTPException:
             log.exception("music player failed")
             panel.shutdown()
@@ -468,43 +531,21 @@ class OsaMusify(commands.Cog):
         )
 
     async def _show_list(self, interaction: discord.Interaction, view: discord.ui.LayoutView) -> None:
-        try:
-            await interaction.response.send_message(
-                view=view,
-                ephemeral=True,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except discord.HTTPException:
-            log.exception("music playlist failed")
-            if not interaction.response.is_done():
-                await respond(interaction, notice_text("Something went wrong while showing the list."))
-            return
-        await _remember(interaction, view)
-        await self._keep_one(self._lines, view, _person_key(interaction))
-
-    @music.command(name="stop", description="Stop the music and leave the voice channel")
-    async def stop(self, interaction: discord.Interaction) -> None:
-        # The player buttons already require the voice channel. Stop does too,
-        # so someone outside the room cannot disconnect the bot. A bot that
-        # already left has no room to join, and the parked queue stays.
-        if _bot_in_voice(interaction.guild) and not member_in_voice(interaction.user, interaction.guild):
-            await respond(interaction, notice_text("Join the voice channel first."))
-            return
-        if not _bot_in_voice(interaction.guild):
-            await respond(interaction, notice_text("Nothing is playing."))
-            return
-        await defer_response(interaction)
-        try:
-            line = await stop_track(interaction.guild)
-        except Exception:
-            log.exception("music stop failed")
-            # The player stays. The music may still be going.
-            await _answer(interaction, "Something went wrong while stopping the song.")
-            return
-        card = self._card(interaction.guild)
-        if card is not None:
-            await card.dismiss()
-        await _answer(interaction, line)
+        """One playlist in the channel. A new one replaces the card already there."""
+        async with self._guild_lock(self._line_locks, interaction.guild):
+            try:
+                # The play card stays private. This card is for the channel.
+                await interaction.response.send_message(
+                    view=view,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.HTTPException:
+                log.exception("music playlist failed")
+                if not interaction.response.is_done():
+                    await respond(interaction, notice_text("Something went wrong while showing the list."))
+                return
+            await _remember(interaction, view)
+            await self._keep_one(self._lines, view, _guild_num(interaction.guild))
 
 
 async def _remember(interaction: discord.Interaction, view: object) -> None:
@@ -545,6 +586,14 @@ def _same_message(left: object, right: object) -> bool:
     return type(a) is int and a == b
 
 
+def _bar_file(panel: MusicPlayer) -> dict:
+    """The moving bar, when this card has one. A card with nothing playing sends none."""
+    upload = panel.take_bar()
+    if upload is None:
+        return {}
+    return {"file": upload}
+
+
 async def _player_error(interaction: discord.Interaction, keep: bool) -> None:
     """A fresh search must not replace the card that asked with this error."""
     if keep:
@@ -557,14 +606,27 @@ async def _player_error(interaction: discord.Interaction, keep: bool) -> None:
 
 
 async def _note_search(interaction: discord.Interaction, line: str) -> None:
-    """Tell the person, and leave the card they already have."""
-    await respond(interaction, notice_text(line), ephemeral=True)
+    """Tell the person, and leave the card they already have. A plain add is silent."""
+    shown = visible_note(line)
+    if shown is None:
+        try:
+            await interaction.delete_original_response()
+        except discord.HTTPException:
+            log.warning("music play could not close the add note", exc_info=True)
+        return
+    await respond(interaction, notice_text(shown), ephemeral=True)
 
 
 async def _answer(interaction: discord.Interaction, line: str) -> None:
     """Replace the thinking message. A second message would leave that one up."""
+    shown = visible_note(line)
     try:
-        await interaction.edit_original_response(content=quote_text(notice_text(line)), view=None)
+        if shown is None:
+            await interaction.delete_original_response()
+        else:
+            await interaction.edit_original_response(
+                content=quote_text(notice_text(shown)), view=None,
+            )
     except discord.HTTPException:
         log.warning("music play could not answer", exc_info=True)
 
@@ -575,6 +637,12 @@ def _can_switch(found: str, search: str) -> bool:
     if query and is_link(query):
         return False
     return found.startswith("Nothing on ") or found.endswith("did not answer.")
+
+
+def _on_now(guild: object | None) -> bool:
+    """True while a song is actually playing. An empty voice room is not enough."""
+    state = now_playing(guild)
+    return state is not None and state.has_track
 
 
 def _person_key(interaction: discord.Interaction) -> tuple[int, int] | None:
@@ -591,14 +659,6 @@ def _user_id(user: object) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         return None
     return value
-
-
-def _bot_in_voice(guild: object | None) -> bool:
-    """True when the bot is connected to a voice channel in this server."""
-    player = getattr(guild, "voice_client", None) if guild is not None else None
-    channel = getattr(player, "channel", None) if player is not None else None
-    channel_id = getattr(channel, "id", None)
-    return isinstance(channel_id, int) and not isinstance(channel_id, bool) and channel_id > 0
 
 
 def _guild_num(guild: object | None) -> int | None:

@@ -13,7 +13,7 @@ from music.playlist.card import (
     HISTORY,
     LABEL_ADJUST,
     LABEL_EMPTY,
-    MARK_DELETE,
+    MARK_MINUS,
     MARK_LINE,
     MARK_MOVE,
     QUEUE,
@@ -106,7 +106,7 @@ async def test_delete_removes_the_song_the_button_showed(tmp_path):
         view.message = MagicMock()
         view.message.edit = AsyncMock()
         press = _press(member)
-        song_3 = _button(view, MARK_DELETE, 2)
+        song_3 = _button(view, MARK_MINUS, 2)
         assert await next_track(guild) is None
         await song_3.callback(press)
         assert [row.title for row in queued(guild)] == ["Song 2", "Song 4"]
@@ -126,7 +126,7 @@ async def test_delete_skips_a_song_that_started_after_the_button_was_drawn(tmp_p
         view.message = MagicMock()
         view.message.edit = AsyncMock()
         press = _press(member)
-        song_2 = _button(view, MARK_DELETE, 1)
+        song_2 = _button(view, MARK_MINUS, 1)
         assert await next_track(guild) is None
         await song_2.callback(press)
         assert [row.title for row in queued(guild)] == ["Song 3"]
@@ -214,7 +214,7 @@ async def test_order_swaps_waiting_songs_across_pages(tmp_path):
 
         await _button(view, HISTORY).callback(press)
         await _button(view, QUEUE).callback(press)
-        assert [item.accessory.label for item in _sections(view)[1:]] == [MARK_DELETE] * 5
+        assert [item.accessory.label for item in _sections(view)[1:]] == [MARK_MINUS] * 5
         assert _button(view, LABEL_ADJUST).style == discord.ButtonStyle.secondary
     finally:
         await stop_track(guild)
@@ -357,21 +357,58 @@ async def test_a_parked_queue_can_be_emptied_deleted_and_reordered(tmp_path):
         playback._missing.clear()
         guild.voice_client = None
         assert [row.title for row in queued(guild)] == ["Alpha", "Beta", "Gamma"]
-        assert [row.playing for row in queued(guild)] == [False, False, False]
+        assert [row.playing for row in queued(guild)] == [True, False, False]
 
         view = LiveLine(guild, store)
         view.message = MagicMock()
         view.message.edit = AsyncMock()
+        shown = _text(view)
+        assert "Now Playing" in shown
+        assert "Nothing is playing" not in shown
         press = _press()
-        await _button(view, MARK_DELETE, 2).callback(press)
-        assert [row.title for row in queued(guild)] == ["Alpha", "Beta"]
+        await _button(view, LABEL_ADJUST).callback(press)
+        await _button(view, MARK_MOVE, 1).callback(press)
+        await _button(view, MARK_MOVE, 2).callback(press)
+        assert [row.title for row in queued(guild)] == ["Alpha", "Gamma", "Beta"]
 
         await _button(view, LABEL_ADJUST).callback(press)
-        await _button(view, MARK_MOVE, 0).callback(press)
-        await _button(view, MARK_MOVE, 1).callback(press)
-        assert [row.title for row in queued(guild)] == ["Beta", "Alpha"]
+        await _button(view, MARK_MINUS, 2).callback(press)
+        assert [row.title for row in queued(guild)] == ["Alpha", "Gamma"]
 
         await _answer_empty(view, press, "yes")
-        assert queued(guild) is None
+        assert [row.title for row in queued(guild)] == ["Alpha"]
+        assert queued(guild)[0].playing is True
     finally:
+        await stop_track(guild)
+
+async def test_a_waiting_song_can_be_deleted_after_a_pause_leaves_the_bot_out_of_voice(tmp_path):
+    """The bot left on a paused song. Someone outside voice removes a waiting one."""
+    from music.playback import toggle_pause
+
+    guild, _member, player, _tracks, note = await _line_up(9701, ["Alpha", "Beta", "Gamma"])
+    store = GuildConfig(tmp_path / "guild.json")
+    try:
+        assert note == "Playing Alpha."
+        player._track = _tracks[0]
+        assert await toggle_pause(guild) is None
+        # The link is gone and nothing released the line.
+        guild.voice_client = None
+        outsider = MagicMock()
+        outsider.voice = None
+
+        view = LiveLine(guild, store)
+        view.message = MagicMock()
+        view.message.edit = AsyncMock()
+        shown = _text(view)
+        assert "Now Playing" in shown
+        assert "Nothing is playing" not in shown
+        press = _press(outsider)
+        await _button(view, MARK_MINUS, 1).callback(press)
+        assert [(row.title, row.playing) for row in queued(guild)] == [
+            ("Alpha", True),
+            ("Gamma", False),
+        ]
+        assert _stored(guild).current.track.title == "Alpha"
+    finally:
+        guild.voice_client = None
         await stop_track(guild)

@@ -93,6 +93,7 @@ class MatchList(_SearchCard):
         on_playing: Started | None = None,
         note: str | None = None,
         on_search: Search | None = None,
+        on_player: Started | None = None,
     ) -> None:
         super().__init__()
         self.query = query
@@ -102,6 +103,7 @@ class MatchList(_SearchCard):
         self.open_queue = on_queue
         self.on_playing = on_playing
         self.open_search = on_search
+        self.open_player = on_player
         self.requester_id = requester_id
         self.page = 0
         self._closed = False
@@ -120,6 +122,25 @@ class MatchList(_SearchCard):
             _options(self.platform),
             "music-platform",
         )
+        # The same controls stay on the card. Turning the page only changes the songs.
+        self.platforms.id = 19
+        self._search = _Search()
+        self._search.id = 4
+        self._back = _Move("on_previous", label=MARK_BACK)
+        self._back.id = 63
+        self._next = _Move("on_next", label=MARK_NEXT)
+        self._next.id = 64
+        self._player = _Move("on_player", label=LABEL_PLAYER)
+        self._player.id = 65
+        self._queue_button = _Move("on_queue", label=LABEL_QUEUE)
+        self._queue_button.id = 66
+        self._close = _Close()
+        self._close.id = 67
+        self._adds = []
+        for slot in range(PAGE):
+            button = _Add(slot)
+            button.id = 50 + slot
+            self._adds.append(button)
         self.paint()
 
     def paint(self) -> None:
@@ -128,35 +149,49 @@ class MatchList(_SearchCard):
         start, stop, current, pages = _window(len(self.tracks), self.page)
         self.page = current
         shown = self.tracks[start:stop]
-        box = discord.ui.Container(accent_colour=ACCENT_COLOR)
-        box.add_item(discord.ui.Section(TITLE, accessory=_Search()))
-        box.add_item(discord.ui.Separator())
-        box.add_item(_row(self.platforms))
-        box.add_item(discord.ui.Separator(visible=False, spacing=discord.SeparatorSpacing.small))
+        box = discord.ui.Container(accent_colour=ACCENT_COLOR, id=1)
+        box.add_item(discord.ui.Section(
+            discord.ui.TextDisplay(TITLE, id=3),
+            accessory=self._search,
+            id=2,
+        ))
+        box.add_item(discord.ui.Separator(id=5))
+        box.add_item(_row(self.platforms, id=6))
+        box.add_item(discord.ui.Separator(visible=False, spacing=discord.SeparatorSpacing.small, id=7))
         if shown:
             for offset, track in enumerate(shown):
                 index = start + offset
+                button = self._adds[offset]
+                button.index = index
                 box.add_item(discord.ui.Section(
-                    song_row(
-                        index + 1,
-                        _plain(getattr(track, "title", None), "Unknown"),
-                        _plain(getattr(track, "author", None)),
-                        _ms(track),
+                    discord.ui.TextDisplay(
+                        song_row(
+                            index + 1,
+                            _plain(getattr(track, "title", None), "Unknown"),
+                            _plain(getattr(track, "author", None)),
+                            _ms(track),
+                        ),
+                        id=40 + offset,
                     ),
-                    accessory=_Add(index),
+                    accessory=button,
+                    id=30 + offset,
                 ))
         else:
-            box.add_item(discord.ui.TextDisplay(self.note or "No songs matched that."))
-        box.add_item(discord.ui.Separator())
+            box.add_item(discord.ui.TextDisplay(self.note or "No songs matched that.", id=16))
+        box.add_item(discord.ui.Separator(id=60))
         box.add_item(discord.ui.TextDisplay(
             _hold_card(page_line(current + 1, pages, len(self.tracks))),
+            id=61,
         ))
+        self._back.disabled = current == 0
+        self._next.disabled = current >= pages - 1
         box.add_item(_row(
-            _Move("on_previous", label=MARK_BACK, disabled=current == 0),
-            _Move("on_next", label=MARK_NEXT, disabled=current >= pages - 1),
-            _Move("on_player", label=LABEL_PLAYER),
-            _Move("on_queue", label=LABEL_QUEUE),
-            _Close(),
+            self._back,
+            self._next,
+            self._player,
+            self._queue_button,
+            self._close,
+            id=62,
         ))
         if self._box is not None:
             self.remove_item(self._box)
@@ -201,7 +236,12 @@ class MatchList(_SearchCard):
         title = _plain(getattr(track, "title", None), "that song")
         line = "Something went wrong while starting the song."
         try:
-            await show_note(interaction, f"Starting {title}")
+            # Already on a song, so this one only waits. "Starting" is for the song that begins now.
+            state = _pkg().now_playing(interaction.guild)
+            if state is None or not state.has_track:
+                await show_note(interaction, f"Starting {title}")
+            elif not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
             try:
                 line = await _pkg().queue_tracks(
                     interaction.user, interaction.guild, [track], platform,
@@ -220,10 +260,13 @@ class MatchList(_SearchCard):
         if await self._busy(interaction):
             return
         try:
-            if _pkg().now_playing(interaction.guild) is None:
+            state = _pkg().now_playing(interaction.guild)
+            if state is None or not state.has_track:
                 await _note(interaction, "Nothing is playing.")
                 return
-            await self.on_started(interaction)
+            # The Player button asks for the card. Starting a song uses on_started.
+            opener = self.open_player if self.open_player is not None else self.on_started
+            await opener(interaction)
         finally:
             self._working = False
 

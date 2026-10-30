@@ -13,11 +13,11 @@ from music.archive import (
     create_playlist, delete_playlist, find_playlist, list_playlists,
     playlist_name, replace_songs, save_song,
 )
-from music.panel import MARK_ADD, SearchSong, _Mark, _note, _row, _selected
+from music.panel import MARK_ADD, SearchSong, _note, _row, _selected
 from music.playback import leave_if_idle, played, playing_note, warm_voice
 from music.playlist.popups import FindInList, NamePlaylist, RemovePlaylist, SaveSong
 from music.playlist.card import (
-    HISTORY, MARK_DELETE, PICK, PLAYLISTS, _READ_AT_ONCE,
+    HISTORY, MARK_MINUS, PICK, PLAYLISTS, _READ_AT_ONCE,
     _BUSY, _as_saved, _defer, _guild_num, _heard, _list_noun, _menu_gap, _mixed_platforms,
     _person, _saved_span, _song_noun, _song_span, _track_author, _track_length,
     empty_text, pick_text, saved_row,
@@ -327,8 +327,8 @@ class _Lists:
     def _lists(self, box: discord.ui.Container) -> tuple[int, int, int | None, str]:
         lists = self._saved_lists()
         self._fill_menu()
-        box.add_item(_row(self.menu))
-        box.add_item(discord.ui.TextDisplay(pick_text()))
+        box.add_item(_row(self.menu, id=18))
+        box.add_item(discord.ui.TextDisplay(pick_text(), id=17))
         return 1, len(lists), _saved_span(lists), _list_noun(len(lists))
 
     def _fill_menu(self) -> None:
@@ -532,18 +532,16 @@ class _Lists:
     def _open_list(self, box: discord.ui.Container) -> tuple[int, int, int | None, str]:
         saved = self.opened
         self._fill_menu()
-        box.add_item(_row(self.menu))
-        box.add_item(_menu_gap())
+        box.add_item(_row(self.menu, id=18))
+        box.add_item(_menu_gap(20))
         visible = self._matched(saved)
         start, stop, pages = self._slice(len(visible))
-        mark, method = (MARK_DELETE, "on_drop") if self._removing else (MARK_ADD, "on_song")
+        mark, method = (MARK_MINUS, "on_drop") if self._removing else (MARK_ADD, "on_song")
         site = _mixed_platforms(saved.songs)
-        for index, song in visible[start:stop]:
-            box.add_item(discord.ui.Section(
-                saved_row(index + 1, song, site=site), accessory=_Mark(mark, method, index),
-            ))
+        for offset, (index, song) in enumerate(visible[start:stop]):
+            self._show_slot(box, offset, saved_row(index + 1, song, site=site), mark, method, index)
         if not visible:
-            box.add_item(discord.ui.TextDisplay(empty_text(saved.name)))
+            box.add_item(discord.ui.TextDisplay(empty_text(saved.name), id=16))
         songs = tuple(song for _index, song in visible)
         return pages, len(visible), _song_span(songs), _song_noun(len(visible))
 

@@ -8,10 +8,12 @@ from unittest.mock import AsyncMock, MagicMock
 import wavelink
 
 from music.lavalink import (
+    IDLE_SECONDS,
     Found,
     GuildPlayer,
     Opened,
     _join,
+    connect_node,
     find_songs,
     node_is_ready,
     open_recordings,
@@ -21,6 +23,29 @@ from music.playback import now_playing, queue_tracks, warm_voice, stop_track
 from music.source import MATCHES
 
 from tests.music.support import _Player, _linked_player, _named, _ready_node
+
+async def test_an_idle_room_is_five_minutes(monkeypatch):
+    created = {}
+
+    class Node:
+        def __init__(self, **kwargs):
+            created.update(kwargs)
+            self._retries = 0
+            self.session_id = "session"
+            self.status = type("Status", (), {"name": "CONNECTED"})()
+
+    async def connect(**kwargs):
+        return None
+
+    monkeypatch.setattr("music.lavalink.wavelink.Node", Node)
+    monkeypatch.setattr("music.lavalink.wavelink.Pool.connect", connect)
+    monkeypatch.setattr("music.lavalink.settings.lavalink_uri", "http://lavalink")
+    monkeypatch.setattr("music.lavalink.settings.lavalink_password", "secret")
+    await connect_node(MagicMock())
+    assert created["inactive_player_timeout"] == IDLE_SECONDS == 300
+    assert created["inactive_channel_tokens"] is None
+    assert created["retries"] == 0
+
 
 def test_a_node_without_a_session_is_offline(monkeypatch):
     node = MagicMock()
@@ -300,6 +325,16 @@ async def test_a_rejected_voice_link_stays_in_the_channel():
     assert voice["endpoint"] == "example.discord.media"
     player.disconnect.assert_not_awaited()
     assert player._connection_event.is_set() is False
+
+async def test_a_missing_channel_lookup_keeps_the_room():
+    node = _ready_node()
+    player = _linked_player(node)
+    home = MagicMock()
+    home.id = 19
+    player.channel = home
+    player.client.get_channel = MagicMock(return_value=None)
+    await player.on_voice_state_update({"channel_id": "19", "session_id": "session"})
+    assert player.channel is home
 
 async def test_a_cleared_channel_before_the_link_does_not_drop_the_room():
     node = _ready_node()

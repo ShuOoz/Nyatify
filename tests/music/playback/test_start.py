@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import wavelink
 
-from music.lavalink import Found, GuildPlayer, find_songs, node_is_ready, offline_message
+from music.lavalink import IDLE_SECONDS, Found, GuildPlayer, find_songs, node_is_ready, offline_message
 from music.playback import (
     QUEUE_SONGS,
     advance_from_end,
@@ -15,15 +15,18 @@ from music.playback import (
     load_line,
     next_track,
     play_now,
+    played,
     now_playing,
     previous_track,
     queue_opened,
     queue_tracks,
     leave_if_idle,
+    leave_if_quiet,
     queued,
     release,
     warm_voice,
     stop_track,
+    toggle_pause,
     _stored,
 )
 
@@ -319,6 +322,117 @@ async def test_play_stays_in_the_open_room():
     player.move_to.assert_not_called()
     await stop_track(guild)
 
+async def test_the_room_is_where_discord_has_the_bot():
+    """A stale player channel is not the room. The bot's own voice state is."""
+    from music.playback import member_in_voice
+
+    home = MagicMock()
+    home.id = 19
+    away = MagicMock()
+    away.id = 8
+    player = _Player(away)
+    guild = MagicMock()
+    guild.id = 9102
+    guild.voice_client = None
+    await stop_track(guild)
+    me = MagicMock()
+    me.id = 4
+    me.voice.channel = home
+    guild.me = me
+    guild.voice_client = player
+    member = MagicMock()
+    member.id = 9
+    member.voice.channel = home
+    try:
+        # The player object still names the old room. Discord has the bot in this one.
+        assert member_in_voice(member, guild) is True
+        assert await queue_tracks(member, guild, [_named("Next")]) == "Playing Next."
+
+        # The channel object was cleared. The last voice update still names the room.
+        player.channel = None
+        me.voice = None
+        player._voice_state = {"channel_id": "19"}
+        assert member_in_voice(member, guild) is True
+        assert await queue_tracks(member, guild, [_named("After")]) == "Added After."
+
+        # Discord really has the bot somewhere else. That room stays closed.
+        me.voice = MagicMock()
+        me.voice.channel = away
+        assert await queue_tracks(member, guild, [_named("Nope")]) == "Join the voice channel first."
+
+        # Discord dropped the channel object. The link is still up in this room.
+        me.voice = None
+        player.channel = home
+        player._connected = True
+        player._voice_state = {}
+        member.voice.channel = home
+        assert member_in_voice(member, guild) is True
+        assert await queue_tracks(member, guild, [_named("Still")]) == "Added Still."
+    finally:
+        await stop_track(guild)
+
+async def test_a_restart_does_not_keep_the_old_room():
+    """A voice state with no player was left by the last process. It is not a room."""
+    home = MagicMock()
+    home.id = 19
+    away = MagicMock()
+    away.id = 8
+    guild = MagicMock()
+    guild.id = 9103
+    guild.voice_client = None
+    await stop_track(guild)
+    me = MagicMock()
+    me.id = 4
+    me.voice.channel = away
+    guild.me = me
+    player = _Player(home)
+    home.connect = AsyncMock(return_value=player)
+
+    async def play(track):
+        player._track = track
+
+    player.play.side_effect = play
+    member = MagicMock()
+    member.id = 9
+    member.voice = None
+    voice = MagicMock()
+    voice.channel = home
+    guild._voice_states = {9: voice}
+    try:
+        assert await queue_tracks(member, guild, [_named("Next")]) == "Playing Next."
+    finally:
+        await stop_track(guild)
+
+async def test_adding_while_a_reloaded_player_is_still_on_the_song():
+    guild, player, track = await _playing()
+    try:
+        member = MagicMock()
+        member.id = 9
+        member.voice.channel = player.channel
+
+        class OldPlayer(wavelink.Player):
+            def __init__(self) -> None:
+                self.channel = player.channel
+                self.disconnect = AsyncMock()
+                self.play = AsyncMock()
+                self._track = track
+
+            @property
+            def current(self):
+                return self._track
+
+        OldPlayer.__module__ = "music.lavalink"
+        old = OldPlayer()
+        guild.voice_client = old
+        assert await queue_tracks(member, guild, [_named("Extra")]) == "Added Extra."
+        old.play.assert_not_awaited()
+        old.disconnect.assert_not_awaited()
+        assert _stored(guild).current.track is track
+        assert [song.track.title for song in _stored(guild).later] == ["Extra"]
+    finally:
+        guild.voice_client = player
+        await stop_track(guild)
+
 async def test_a_play_during_the_gap_lines_up():
     guild, player, track = await _playing()
     try:
@@ -479,4 +593,189 @@ async def test_an_early_join_leaves_only_when_nothing_started():
     finally:
         player.play.side_effect = None
         guild.voice_client = player
+        await stop_track(guild)
+
+
+async def test_five_quiet_minutes_leave_and_keep_the_queue():
+    guild, player, _track = await _playing()
+    try:
+        assert await leave_if_quiet(guild) is False
+        player.disconnect.assert_not_awaited()
+
+        member = MagicMock()
+        member.id = 18
+        member.voice.channel = player.channel
+        assert await queue_tracks(member, guild, [_named("Next")]) == "Added Next."
+        player._track = None
+        _stored(guild).current = None
+        assert await leave_if_quiet(guild) is True
+        player.disconnect.assert_awaited_once()
+        release(guild)
+        import music.playback as playback
+
+        playback._lines.clear()
+        playback._heard.clear()
+        playback._missing.clear()
+        guild.voice_client = None
+        assert [row.title for row in queued(guild)] == ["Next"]
+    finally:
+        guild.voice_client = None
+        await stop_track(guild)
+
+
+async def test_five_paused_minutes_leave_and_keep_the_song(monkeypatch):
+    guild, player, _track = await _playing()
+    try:
+        member = MagicMock()
+        member.id = 18
+        member.voice.channel = player.channel
+        assert await queue_tracks(member, guild, [_named("Next")]) == "Added Next."
+        seen: list[float] = []
+
+        async def no_wait(seconds):
+            seen.append(seconds)
+            return None
+
+        monkeypatch.setattr("music.playback.start._wait", no_wait)
+        finished = asyncio.Event()
+
+        def dispatch(event, target):
+            assert event == "wavelink_inactive_player"
+            assert target is player
+
+            async def run():
+                assert await leave_if_quiet(guild) is True
+                finished.set()
+
+            asyncio.create_task(run())
+
+        player.client = MagicMock()
+        player.client.dispatch = dispatch
+        assert await toggle_pause(guild) is None
+        await asyncio.wait_for(finished.wait(), timeout=1)
+        assert seen == [IDLE_SECONDS]
+        player.disconnect.assert_awaited_once()
+
+        import music.playback as playback
+
+        playback._lines.clear()
+        playback._heard.clear()
+        playback._missing.clear()
+        guild.voice_client = None
+        state = now_playing(guild)
+        assert state is not None and state.title == "I Ain't Worried" and state.paused is True
+        assert [(row.title, row.playing) for row in queued(guild)] == [
+            ("I Ain't Worried", True),
+            ("Next", False),
+        ]
+    finally:
+        guild.voice_client = None
+        await stop_track(guild)
+
+
+async def test_a_paused_leave_keeps_this_song_when_another_is_added(monkeypatch):
+    """The bot left on a pause. A new song waits. Play continues this one."""
+    import music.playback as playback
+
+    guild, player, track = await _playing()
+    try:
+        member = MagicMock()
+        member.id = 18
+        member.voice.channel = player.channel
+        assert await queue_tracks(member, guild, [_named("Next")]) == "Added Next."
+        player._position = 40_000
+        assert await toggle_pause(guild) is None
+        # The link is gone and the line is still the one pause wrote.
+        guild.voice_client = None
+        plays = player.play.await_count
+        assert await queue_tracks(member, guild, [_named("Extra")]) == "Added Extra."
+        assert player.play.await_count == plays
+        held = _stored(guild)
+        assert held.current.track is track and held.paused is True and held.spot == 40_000
+        assert [song.track.title for song in held.later] == ["Next", "Extra"]
+
+        release(guild)
+        playback._lines.clear()
+        playback._heard.clear()
+        playback._missing.clear()
+        guild.voice_client = None
+        live = _named("I Ain't Worried")
+        live.uri = "https://example.com/song"
+        live.length = 148_000
+
+        async def search(_guild, query, _platform):
+            assert query == "https://example.com/song"
+            return Found(query, "youtube", [live], True)
+
+        monkeypatch.setattr("music.playback.find_songs", search)
+        assert await queue_tracks(member, guild, [_named("Later")]) == "Added Later."
+        assert player.play.await_count == plays
+        state = now_playing(guild)
+        assert state is not None and state.title == "I Ain't Worried"
+        assert state.paused is True and state.position == 40_000
+        assert [(row.title, row.playing) for row in queued(guild)] == [
+            ("I Ain't Worried", True),
+            ("Next", False),
+            ("Extra", False),
+            ("Later", False),
+        ]
+
+        async def connect(**_kwargs):
+            guild.voice_client = player
+            return player
+
+        async def play(song, **kwargs):
+            player._track = song
+            player._position = kwargs.get("start", 0)
+
+        channel = player.channel
+        channel.connect = AsyncMock(side_effect=connect)
+        player.play.side_effect = play
+        assert await toggle_pause(guild, member) is None
+        player.play.assert_awaited_with(live, start=40_000)
+        guild.voice_client = player
+        assert now_playing(guild).paused is False
+        assert now_playing(guild).position == 40_000
+        assert [(row.title, row.playing) for row in queued(guild)] == [
+            ("I Ain't Worried", True),
+            ("Next", False),
+            ("Extra", False),
+            ("Later", False),
+        ]
+        assert [row.title for row in played(guild)] == []
+    finally:
+        guild.voice_client = None
+        await stop_track(guild)
+
+
+async def test_a_failed_resume_leaves_the_paused_song_where_it_was():
+    guild, player, track = await _playing()
+    try:
+        member = MagicMock()
+        member.id = 18
+        member.voice.channel = player.channel
+        assert await queue_tracks(member, guild, [_named("Next")]) == "Added Next."
+        player._position = 40_000
+        assert await toggle_pause(guild) is None
+        guild.voice_client = None
+        player._track = None
+
+        async def connect(**_kwargs):
+            return player
+
+        async def fail(_song, **_kwargs):
+            raise wavelink.WavelinkException("no")
+
+        player.channel.connect = AsyncMock(side_effect=connect)
+        player.play.side_effect = fail
+        assert await toggle_pause(guild, member) == "Something went wrong while changing the song."
+        held = _stored(guild)
+        assert held.current.track is track and held.paused is True and held.spot == 40_000
+        assert [song.track.title for song in held.later] == ["Next"]
+        assert [(row.title, row.playing) for row in queued(guild)] == [
+            ("I Ain't Worried", True),
+            ("Next", False),
+        ]
+    finally:
+        guild.voice_client = None
         await stop_track(guild)

@@ -7,7 +7,6 @@ import logging
 import discord
 
 from music.panel import (
-    _Mark,
     _clip,
     _note,
 )
@@ -26,6 +25,7 @@ from music.playback import (
     edits_queue,
     leave_if_idle,
     move_queued,
+    now_playing,
     playing_note,
     queued,
     skipped_songs,
@@ -40,7 +40,7 @@ from music.playlist.popups import (
 
 from music.playlist.card import (
     HISTORY,
-    MARK_DELETE,
+    MARK_MINUS,
     MARK_MOVE,
     PLAYLISTS,
     QUEUE,
@@ -239,6 +239,10 @@ class _Queue:
 
 
     async def _in_room(self, interaction: discord.Interaction) -> bool:
+        # The card may still hold the guild from before a reconnect.
+        live = getattr(interaction, "guild", None)
+        if isinstance(live, discord.Guild) and live.id == _guild_num(self.guild):
+            self.guild = live
         if edits_queue(interaction.user, self.guild):
             return True
         await _note(interaction, "Join the voice channel first.")
@@ -311,7 +315,9 @@ class _Queue:
             await interaction.response.defer()
             rows = queued(self.guild) or []
             place = self._drawn_place(rows, index, waiting=False)
-            note = "That song is gone." if place is None else await drop_queued(self.guild, place)
+            note = "That song is gone." if place is None else await drop_queued(
+                self.guild, place, interaction.user,
+            )
             if note:
                 await _note(interaction, note)
             self.paint()
@@ -330,26 +336,25 @@ class _Queue:
             self._clear_move()
         elif self._ordering:
             self._keep_move(rows)
-        box.add_item(discord.ui.TextDisplay(now_text(current)))
+        state = now_playing(self.guild)
+        shuffling = state is not None and state.shuffling and current is not None
+        box.add_item(discord.ui.TextDisplay(now_text(current, shuffling=shuffling), id=12))
         moving = self._moving_line(waiting, base)
         if moving:
-            box.add_item(discord.ui.TextDisplay(moving))
+            box.add_item(discord.ui.TextDisplay(moving, id=13))
         _start, stop, pages = self._slice(len(waiting))
         if waiting:
-            box.add_item(_rule())
+            box.add_item(_rule(14))
             for offset, row in enumerate(waiting[_start:stop]):
                 index = base + _start + offset
-                accessory = (
-                    _Mark(MARK_MOVE, "move_at", index, style=_lit(self._moving == index))
-                    if self._ordering
-                    else _Mark(MARK_DELETE, "remove_at", index)
-                )
-                box.add_item(discord.ui.Section(
-                    queue_row(_start + offset + 1, row), accessory=accessory,
-                ))
+                if self._ordering:
+                    label, method, style = MARK_MOVE, "move_at", _lit(self._moving == index)
+                else:
+                    label, method, style = MARK_MINUS, "remove_at", discord.ButtonStyle.secondary
+                self._show_slot(box, offset, queue_row(_start + offset + 1, row), label, method, index, style)
         notice = skipped_songs(self.guild)
         if notice:
-            box.add_item(discord.ui.TextDisplay(f"-# {notice}"))
+            box.add_item(discord.ui.TextDisplay(f"-# {notice}", id=15))
         return pages, len(waiting), _span(waiting), _queued_noun(len(waiting))
 
 

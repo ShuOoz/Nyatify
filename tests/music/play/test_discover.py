@@ -9,7 +9,7 @@ import discord
 from cogs.osa_musify import OsaMusify
 from guild import GuildConfig
 from music.panel import MARK_ANY, MARK_SEARCH, PANEL_SECONDS
-from music.play.discover import EMPTY_SECONDS, GenreList
+from music.play.discover import EMPTY_SECONDS, GenreList, _kept
 from music.lavalink import Found
 from music.archive import SavedSong, create_playlist
 from music.source import GENRES, RADIOS, station_videos
@@ -191,8 +191,7 @@ async def test_a_radio_station_stops_when_one_video_settles(monkeypatch):
     assert calls == [links[0]]
     queued.assert_awaited_once()
     assert queued.await_args.kwargs["station"] == "lofi"
-    assert "Added Sweet Dreams" in press.send.await_args.args[0]
-    assert "did not start" not in press.send.await_args.args[0]
+    press.send.assert_not_awaited()
     started.assert_not_awaited()
 
     calls.clear()
@@ -217,39 +216,37 @@ async def test_a_radio_station_stops_when_one_video_settles(monkeypatch):
     press.send.assert_not_awaited()
     assert press.response.edit_message.await_args.kwargs["view"] is view
 
-async def test_the_any_button_picks_a_random_genre(monkeypatch):
-    tracks = [_named("Anywhere")]
+async def test_the_any_button_picks_a_song_from_the_weekly_lists(monkeypatch):
+    tracks = {url: [_named(label)] for label, url in GENRES}
+    opened = []
+    _kept.clear()
 
     async def search(guild, song, platform="youtube", mode=None):
-        assert song == "classic rock"
-        assert platform == "spotify"
-        assert mode == "draw"
-        return Found(song, "spotify", tracks, False)
-
-    def choose(options):
-        if options and isinstance(options[0], tuple):
-            return ("Rock", "classic rock")
-        return options[0]
+        opened.append(song)
+        assert mode is None
+        return Found(song, "spotify", tracks[song], True)
 
     monkeypatch.setattr("music.play.find_songs", search)
-    monkeypatch.setattr("music.play.random.choice", choose)
+    monkeypatch.setattr("music.play.random.choice", lambda options: options[-1])
     queued = AsyncMock(return_value="Playing Anywhere.")
     monkeypatch.setattr("music.play.queue_tracks", queued)
     started = AsyncMock()
     view = GenreList("spotify", started)
     await view.any.callback(_ask())
+    assert set(opened) == {url for _label, url in GENRES}
     queued.assert_awaited_once()
-    assert queued.await_args.args[2] == [tracks[0]]
+    assert queued.await_args.args[2] == tracks[GENRES[-1][1]]
     started.assert_awaited_once()
 
 async def test_a_genre_plays_one_random_match(monkeypatch):
     tracks = [_named("First"), _named("Second")]
+    jazz = dict(GENRES)["Jazz"]
+    _kept.clear()
 
     async def search(guild, song, platform="youtube", mode=None):
-        assert song == "jazz piano"
-        assert platform == "spotify"
-        assert mode == "draw"
-        return Found(song, "spotify", tracks, False)
+        assert song == jazz
+        assert mode is None
+        return Found(song, "spotify", tracks, True)
 
     monkeypatch.setattr("music.play.find_songs", search)
     queued = AsyncMock(return_value="Playing Second.")
@@ -298,7 +295,7 @@ async def test_a_genre_plays_one_random_match(monkeypatch):
     message.delete = AsyncMock()
     view.message = message
     press = _ask()
-    button = next(item for item in view.buttons if item.phrase == "jazz piano")
+    button = next(item for item in view.buttons if item.phrase == jazz)
     await button.callback(press)
     message.delete.assert_not_awaited()
     queued.assert_awaited_once()
@@ -312,12 +309,12 @@ async def test_a_genre_plays_one_random_match(monkeypatch):
     waiting = GenreList("Spotify", started)
     waiting.message = message
     press = _ask()
-    again = next(item for item in waiting.buttons if item.phrase == "jazz piano")
+    again = next(item for item in waiting.buttons if item.phrase == jazz)
     await again.callback(press)
     message.delete.assert_not_awaited()
     started.assert_not_awaited()
     assert waiting.is_finished() is False
-    assert "Added Second" in press.send.await_args.args[0]
+    press.send.assert_not_awaited()
 
     missed = GenreList("Spotify", started)
     missed.message = message
@@ -326,7 +323,7 @@ async def test_a_genre_plays_one_random_match(monkeypatch):
     started.reset_mock()
     queued.return_value = "Join a voice channel first."
     press = _ask()
-    button = next(item for item in missed.buttons if item.phrase == "jazz piano")
+    button = next(item for item in missed.buttons if item.phrase == jazz)
     await button.callback(press)
     message.delete.assert_not_awaited()
     assert missed.is_finished() is False
@@ -335,6 +332,7 @@ async def test_a_genre_plays_one_random_match(monkeypatch):
 
 async def test_a_genre_start_holds_the_card_open(monkeypatch):
     seen = []
+    _kept.clear()
 
     async def search(guild, song, platform="youtube", mode=None):
         seen.append(view.timeout)
@@ -345,5 +343,5 @@ async def test_a_genre_start_holds_the_card_open(monkeypatch):
     view = GenreList("spotify", AsyncMock())
     assert view.timeout == EMPTY_SECONDS
     await view.any.callback(_ask())
-    assert seen == [PANEL_SECONDS]
+    assert seen == [PANEL_SECONDS] * len(GENRES)
     assert view.timeout == EMPTY_SECONDS

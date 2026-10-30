@@ -11,15 +11,14 @@ from music.panel import (
     _hold_card,
     format_clock,
     page_line,
-    progress_bar,
-    progress_line,
     progress_text,
     song_label,
     song_line,
     song_row,
 )
 from music.play.discover import EMPTY_SECONDS, GenreList
-from music.player.view import MusicPlayer
+from music.player.album import _album_line
+from music.player.card import MusicPlayer, _next_line
 from music.playlist.card import LiveLine
 from music.playback import stop_track
 
@@ -31,23 +30,19 @@ def test_clock_and_song_line():
     assert format_clock(3_600_000) == "1:00:00"
     assert format_clock(-20) == "0:00"
     assert progress_text(0, 148_000) == "0:00 / 2:28"
+    assert progress_text(74_000, 148_000) == "1:14 / 2:28"
     assert progress_text(0, 0) == "live"
-    assert progress_line(0, 148_000) == f"0:00  {progress_bar(0, 148_000)}  2:28"
-    assert progress_line(0, 0).startswith("live  ")
-    assert progress_bar(0, 0) == progress_bar(50_000, 0)
-    assert "━" not in progress_bar(0, 0)
-    assert progress_bar(0, 148_000).startswith("●")
-    assert progress_bar(148_000, 148_000).endswith("●")
-    assert progress_bar(0, 148_000) != progress_bar(74_000, 148_000)
     assert song_line("I Ain't Worried", "OneRepublic", "https://example.com/song") == (
-        "**[I Ain't Worried](https://example.com/song)**\nOneRepublic"
+        "### [I Ain't Worried](https://example.com/song)\nOneRepublic"
     )
     assert song_line("I Ain't Worried - OneRepublic", "OneRepublic", None) == (
-        "**I Ain't Worried - OneRepublic**"
+        "### I Ain't Worried - OneRepu…"
     )
-    assert song_line("Needed", "Ed", None) == "**Needed**\nEd"
-    assert song_line("Needed, Ed", "Ed", None) == "**Needed, Ed**"
-    assert song_line("Airplane", "Air", None) == "**Airplane**\nAir"
+    assert song_line("Needed", "Ed", None) == "### Needed\nEd"
+    assert song_line("Needed, Ed", "Ed", None) == "### Needed, Ed"
+    assert song_line("Airplane", "Air", None) == "### Airplane\nAir"
+    assert song_line("雨" * 40, "Ed", None).split("\n", 1)[0].endswith("…")
+    assert song_line("Needed", "雨" * 40, None).split("\n", 1)[1].endswith("…")
     assert song_label("Needed", "Ed") == "Needed - Ed"
     assert song_label("Needed, Ed", "Ed") == "Needed, Ed"
     assert song_label("Airplane", "Air") == "Airplane - Air"
@@ -73,6 +68,20 @@ def test_song_row_names_the_artist_and_the_length():
         "**100\\.** Please Come Home (fe…"
     )
     assert song_row(2, "雨" * 20, "POP", 0).split("\n", 1)[0] == f"**2\\.** {'雨' * 12}…"
+    wide = song_row(1, "Title", "雨" * 30, 180_000, "Playing", fit=True)
+    assert wide.split("\n", 1)[1].endswith("• 3:00 • Playing")
+    assert "…" in wide.split("\n", 1)[1]
+    album = _album_line("雨" * 40, "雨" * 40, None)
+    assert album.split("\n", 1)[0].endswith("…")
+    assert album.split("\n", 1)[1].startswith("By ")
+    assert album.split("\n", 1)[1].endswith("…")
+    assert _album_line("Dreaming Out Loud", "OneRepublic", None) == (
+        "### Dreaming Out Loud\nBy OneRepublic"
+    )
+    coming = _next_line("雨" * 40)
+    assert coming.startswith("-# Up next: ")
+    assert coming.endswith("…")
+    assert _next_line("After") == "-# Up next: After"
     held = _hold_card("Page 1/1  |  1 Result")
     assert held.startswith("Page 1/1  |  1 Result")
     assert _columns(held) >= _CARD - 1

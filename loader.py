@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import inspect
 import logging
 import sys
 from pathlib import Path
@@ -98,7 +99,7 @@ def cog_feature_packages(name: str) -> tuple[str, ...]:
 def reload_cog_modules(name: str) -> list[str]:
     """Reload the cog's feature modules so a later cog reload sees new code.
 
-    discord.py reloads the cog file only. A name imported from `music.player.view`
+    discord.py reloads the cog file only. A name imported from `music.player.card`
     would keep the copy loaded at startup.
     """
     packages = cog_feature_packages(name)
@@ -116,8 +117,10 @@ def reload_cog_modules(name: str) -> list[str]:
 def reload_packages(packages: tuple[str, ...]) -> list[str]:
     """Reload loaded modules under these packages, dependencies first.
 
-    Modules that import each other reload a second time so `from x import y`
-    binds the new object.
+    Modules that import each other reload a second time. The last pass then
+    points every imported class and function at the copy that reload defined.
+    A longer cycle reloads the importer before that class, so isinstance would
+    miss a song loaded from disk.
     """
     loading = _loaded_feature_modules(packages)
     if not loading:
@@ -134,6 +137,7 @@ def reload_packages(packages: tuple[str, ...]) -> list[str]:
             _reload_module(module_name)
         for module_name in cyclic:
             _reload_module(module_name)
+        _rebind_imports(cyclic)
     except Exception:
         _restore_modules(saved)
         raise
@@ -151,6 +155,80 @@ def _reload_module(module_name: str) -> None:
         except OSError:
             pass
     importlib.reload(module)
+
+
+def _rebind_imports(module_names: list[str]) -> None:
+    """Replace a stale imported class or function with the one just defined.
+
+    Reloading runs the modules in order. The module that defines a class can
+    run after the module that imported it, which leaves the old class in place.
+    """
+    loading = set(module_names)
+    for _ in module_names:
+        changed = False
+        for module_name in module_names:
+            if _rebind_module(module_name, loading):
+                changed = True
+        if not changed:
+            return
+
+
+def _rebind_module(module_name: str, loading: set[str]) -> bool:
+    module = sys.modules.get(module_name)
+    if module is None:
+        return False
+    changed = False
+    for local, source, attr in _bound_imports(module_name):
+        if source not in loading or attr is None or local not in module.__dict__:
+            continue
+        origin = sys.modules.get(source)
+        if origin is None:
+            continue
+        target = getattr(origin, attr, None)
+        current = module.__dict__[local]
+        if not _older_copy(current, target, attr):
+            continue
+        module.__dict__[local] = target
+        changed = True
+    return changed
+
+
+def _older_copy(current: object, target: object, attr: str) -> bool:
+    """True when both are the same class or function and not the same object."""
+    if current is target or not _defined(current) or not _defined(target):
+        return False
+    return (
+        getattr(current, "__name__", None) == attr
+        and getattr(target, "__name__", None) == attr
+        and getattr(current, "__module__", None) == getattr(target, "__module__", None)
+    )
+
+
+def _defined(value: object) -> bool:
+    return isinstance(value, type) or inspect.isfunction(value)
+
+
+def _bound_imports(module_name: str) -> list[tuple[str, str, str | None]]:
+    """Module-level imports: the local name, the source module, and the attribute."""
+    module = sys.modules.get(module_name)
+    path = getattr(module, "__file__", None)
+    if not isinstance(path, str):
+        return []
+    try:
+        tree = ast.parse(Path(path).read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return []
+    bound: list[tuple[str, str, str | None]] = []
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            if any(alias.name == "*" for alias in node.names):
+                continue
+            base = _import_from_base(module_name, node)
+            if not base:
+                continue
+            for alias in node.names:
+                bound.append((alias.asname or alias.name, base, alias.name))
+    return bound
 
 
 def _restore_modules(saved: dict[str, dict[str, object]]) -> None:

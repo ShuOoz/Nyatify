@@ -115,6 +115,30 @@ async def test_reload_leaves_feature_modules_alone_when_the_cog_is_not_loaded(
     cog.bot.reload_extension.assert_awaited_once_with("cogs.news_notify")
 
 
+async def test_reload_acknowledges_before_the_cog_comes_back(cog, monkeypatch):
+    order = []
+    interaction, done = _deferred_interaction()
+
+    def reload_modules(extension):
+        order.append(("modules", done["value"], extension))
+
+    async def reload_extension(extension):
+        order.append(("cog", done["value"], extension))
+
+    monkeypatch.setattr("cogs.admin.reload_cog_modules", reload_modules)
+    cog.bot.reload_extension = reload_extension
+    cog.bot.extensions = {"cogs.osa_musify": object()}
+    await cog.reload_cog.callback(cog, interaction, "music")
+    interaction.response.defer.assert_awaited_once_with(ephemeral=False)
+    interaction.response.send_message.assert_not_awaited()
+    sent = interaction.followup.send.await_args.kwargs["content"]
+    assert "Reloaded" in sent and "`music`" in sent
+    assert order == [
+        ("modules", True, "cogs.osa_musify"),
+        ("cog", True, "cogs.osa_musify"),
+    ]
+
+
 async def test_reload_stops_when_feature_modules_fail(cog, monkeypatch):
     def boom(_extension):
         raise SyntaxError("panel")
@@ -265,6 +289,19 @@ async def case_admin_password_shows_and_hides_owner_commands(gated_admin, caplog
     assert reply_text(ctx) == notice_text("Admin commands hidden.")
     assert _names(bot).isdisjoint(HIDDEN_OWNER_COMMANDS)
     assert bot.tree.get_command("news").get_command("check") is None
+
+
+def _deferred_interaction() -> tuple[MagicMock, dict[str, bool]]:
+    interaction, done = _slash_interaction()
+    posted = MagicMock()
+    posted.delete = AsyncMock()
+    interaction.followup.send = AsyncMock(return_value=posted)
+
+    async def defer(*_args, **_kwargs):
+        done["value"] = True
+
+    interaction.response.defer.side_effect = defer
+    return interaction, done
 
 
 def _slash_interaction() -> tuple[MagicMock, dict[str, bool]]:

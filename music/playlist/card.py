@@ -11,7 +11,8 @@ import discord
 from announce import ACCENT_COLOR
 from music.archive import PLAYLIST_LIMIT, SONG_LIMIT, SavedSong
 from music.panel import (
-    MARK_BACK, MARK_CLOSE, MARK_NEXT, MARK_SEARCH, PAGE, RADIO_MARK,
+    MARK_ADD, MARK_BACK, MARK_CLOSE, MARK_LIST, MARK_NEXT, MARK_SAVE, MARK_SEARCH,
+    PAGE, RADIO_MARK,
     _Card, _Mark, _Menu, _clip, _hold_card, _link, _name_in_title, _note, _row,
     format_clock, song_row,
 )
@@ -21,7 +22,8 @@ from music.source import platform_label
 _READ_AT_ONCE = 4
 TITLE = "## Osaka Playlist"
 QUEUE, HISTORY, PLAYLISTS = "Queue", "History", "Playlist"
-MARK_DELETE, MARK_MINUS, MARK_LINE, MARK_SAVE, MARK_MOVE = "⌫", "－", "☰", "\u2605", "⇵"
+MARK_DELETE, MARK_MINUS, MARK_MOVE = "⌫", "－", "⇵"
+MARK_LINE = MARK_LIST
 PICK = "Pick a playlist"
 _ENTRY = 4000
 _PAD, _HALF, _GAP = "\u3164", "\uffa0", "\u00a0"
@@ -52,13 +54,17 @@ def _one(count: int, singular: str, plural: str) -> str:
     return singular if count == 1 else plural
 
 
-def now_text(row: Queued | None) -> str:
+def now_text(row: Queued | None, *, shuffling: bool = False) -> str:
     if row is None:
         return "### Nothing is playing\n-# Use /music play to play a song"
     title = _plain(row.title) or "Unknown"
     artist = "" if _name_in_title(_plain(row.author), title) else _clip(_plain(row.author))
     parts = [artist, format_clock(row.length) if row.length > 0 else ""]
-    lines = ["### Now Playing", f"**{_link(_clip(title), row.url)}**"]
+    # A station has no site. Every other song names one, including the one playing now.
+    if not row.stream:
+        parts.append(platform_label("", row.platform))
+    head = "### Now Playing - On shuffle" if shuffling else "### Now Playing"
+    lines = [head, f"**{_link(_clip(title), row.url)}**"]
     detail = " · ".join(part for part in parts if part)
     if detail:
         lines.append(detail)
@@ -101,10 +107,11 @@ def _tab_label(name: str, widened: bool) -> str:
 
 
 class _Tab(discord.ui.Button):
-    def __init__(self, panel: str, selected: bool, widened: bool = False) -> None:
+    def __init__(self, panel: str, selected: bool, widened: bool = False, *, id: int | None = None) -> None:
         super().__init__(
             label=_tab_label(panel, selected or widened),
             style=_lit(selected),
+            id=id,
         )
         self.panel = panel
 
@@ -150,12 +157,12 @@ def _saved_span(lists: list[SavedList]) -> int | None:
     return sum(spans)
 
 
-def _rule() -> discord.ui.Separator:
-    return discord.ui.Separator(spacing=discord.SeparatorSpacing.small)
+def _rule(part: int | None = None) -> discord.ui.Separator:
+    return discord.ui.Separator(spacing=discord.SeparatorSpacing.small, id=part)
 
 
-def _menu_gap() -> discord.ui.Separator:
-    return discord.ui.Separator(visible=False, spacing=discord.SeparatorSpacing.small)
+def _menu_gap(part: int | None = None) -> discord.ui.Separator:
+    return discord.ui.Separator(visible=False, spacing=discord.SeparatorSpacing.small, id=part)
 
 
 def _as_saved(row: Queued) -> SavedSong | None:
@@ -256,6 +263,21 @@ class LiveLine(_Queue, _Lists, _History, _Card):
             [discord.SelectOption(label="Playlist", value="0")],
             "music-playlist",
         )
+        # The same controls stay on the card. A page or a tab only changes their words.
+        self.menu.id = 19
+        self._corner_button = _Mark(MARK_SEARCH, "on_add", id=4)
+        self._tabs = {
+            QUEUE: _Tab(QUEUE, True, id=7),
+            HISTORY: _Tab(HISTORY, False, id=8),
+            PLAYLISTS: _Tab(PLAYLISTS, False, id=9),
+        }
+        self._side_button = _Mark(MARK_LINE, "on_queue_list", id=10)
+        self._back = _Mark(MARK_BACK, "on_back", id=63)
+        self._next = _Mark(MARK_NEXT, "on_forward", id=64)
+        self._wide_button = _Mark(LABEL_ADJUST, "on_order", id=65)
+        self._narrow_button = _Mark(LABEL_EMPTY, "on_empty", id=66)
+        self._close = _Mark(MARK_CLOSE, "on_close", id=67)
+        self._slots = [_Mark(MARK_ADD, "on_song", 0, id=50 + slot) for slot in range(PAGE)]
         self.paint()
 
     def follow(self, message: discord.Message) -> None:
@@ -307,19 +329,22 @@ class LiveLine(_Queue, _Lists, _History, _Card):
         )
 
     def paint(self) -> None:
-        if self._box is not None:
-            self.remove_item(self._box)
         self._settle_query()
-        box = discord.ui.Container(accent_colour=ACCENT_COLOR)
-        box.add_item(discord.ui.Section(TITLE, accessory=self._corner()))
-        box.add_item(discord.ui.Separator())
-        box.add_item(_row(
-            _Tab(QUEUE, self.panel == QUEUE),
-            _Tab(HISTORY, self.panel == HISTORY),
-            _Tab(PLAYLISTS, self.panel == PLAYLISTS),
-            self._side(),
+        box = discord.ui.Container(accent_colour=ACCENT_COLOR, id=1)
+        box.add_item(discord.ui.Section(
+            discord.ui.TextDisplay(TITLE, id=3),
+            accessory=self._corner(),
+            id=2,
         ))
-        box.add_item(_rule())
+        box.add_item(discord.ui.Separator(id=5))
+        box.add_item(_row(
+            self._paint_tab(QUEUE),
+            self._paint_tab(HISTORY),
+            self._paint_tab(PLAYLISTS),
+            self._side(),
+            id=6,
+        ))
+        box.add_item(_rule(11))
         if self.panel == PLAYLISTS and self.opened is not None:
             summary = self._open_list(box)
         elif self.panel == PLAYLISTS:
@@ -329,9 +354,41 @@ class LiveLine(_Queue, _Lists, _History, _Card):
         else:
             summary = self._queue(box)
         self._footer(box, *summary)
+        if self._box is not None:
+            self.remove_item(self._box)
         self._box = box
         self.add_item(box)
         self._shown = self._snap()
+
+    def _paint_tab(self, name: str) -> _Tab:
+        button = self._tabs[name]
+        selected = self.panel == name
+        button.label = _tab_label(name, selected)
+        button.style = _lit(selected)
+        return button
+
+    def _show_slot(
+        self,
+        box: discord.ui.Container,
+        slot: int,
+        text: str,
+        label: str,
+        method: str,
+        index: int,
+        style: discord.ButtonStyle = discord.ButtonStyle.secondary,
+    ) -> None:
+        """One of the five song rows. The button stays; the words and the action change."""
+        button = self._slots[slot]
+        button.label = label
+        button.method = method
+        button.index = index
+        button.disabled = False
+        button.style = style
+        box.add_item(discord.ui.Section(
+            discord.ui.TextDisplay(text, id=40 + slot),
+            accessory=button,
+            id=30 + slot,
+        ))
 
     async def on_tab(self, interaction: discord.Interaction, panel: str) -> None:
         if self._working:
@@ -369,17 +426,32 @@ class LiveLine(_Queue, _Lists, _History, _Card):
 
     def _corner(self) -> discord.ui.Button:
         filtering = self.panel == PLAYLISTS and self.opened is not None and bool(self._query)
-        return _Mark(MARK_SEARCH, "on_add", style=_lit(filtering))
+        self._corner_button.style = _lit(filtering)
+        return self._corner_button
 
     def _side(self) -> discord.ui.Button:
+        button = self._side_button
+        button.index = None
         if self.panel == PLAYLISTS:
-            return _Mark(MARK_MINUS, "on_remove_ask", disabled=self.opened is None)
+            button.label = MARK_DELETE
+            button.method = "on_remove_ask"
+            button.disabled = self.opened is None
+            button.style = discord.ButtonStyle.secondary
+            return button
         if self.panel == QUEUE:
-            return _Mark(MARK_LINE, "on_queue_list", disabled=not self._saved_lists())
+            button.label = MARK_LINE
+            button.method = "on_queue_list"
+            button.disabled = not self._saved_lists()
+            button.style = discord.ButtonStyle.secondary
+            return button
         ready = bool(played(self.guild))
         if not ready:
             self._saving = False
-        return _Mark(MARK_SAVE, "on_save", disabled=not ready, style=_lit(self._saving))
+        button.label = MARK_SAVE
+        button.method = "on_save"
+        button.disabled = not ready
+        button.style = _lit(self._saving)
+        return button
 
     def _footer(
         self,
@@ -389,29 +461,59 @@ class LiveLine(_Queue, _Lists, _History, _Card):
         duration: int | None,
         noun: str,
     ) -> None:
-        box.add_item(discord.ui.Separator())
-        box.add_item(discord.ui.TextDisplay(_hold_card(self._page_line(pages, count, noun, duration))))
+        box.add_item(discord.ui.Separator(id=60))
+        box.add_item(discord.ui.TextDisplay(
+            _hold_card(self._page_line(pages, count, noun, duration)),
+            id=61,
+        ))
+        self._back.disabled = self.page <= 0
+        self._next.disabled = self.page >= pages - 1
         box.add_item(_row(
-            _Mark(MARK_BACK, "on_back", disabled=self.page <= 0),
-            _Mark(MARK_NEXT, "on_forward", disabled=self.page >= pages - 1),
+            self._back,
+            self._next,
             self._wide(count),
             self._narrow(count),
-            _Mark(MARK_CLOSE, "on_close"),
+            self._close,
+            id=62,
         ))
 
     def _wide(self, count: int) -> discord.ui.Button:
+        button = self._wide_button
+        button.index = None
         if self.panel == QUEUE:
-            return _Mark(LABEL_ADJUST, "on_order", disabled=count < 2, style=_lit(self._ordering))
+            button.label = LABEL_ADJUST
+            button.method = "on_order"
+            button.disabled = count < 2
+            button.style = _lit(self._ordering)
+            return button
         if self.panel == HISTORY:
             on = self._mine_id is not None
-            return _Mark(LABEL_YOUR, "on_mine", disabled=not played(self.guild), style=_lit(on))
-        return _Mark(LABEL_NEW_LIST, "on_new")
+            button.label = LABEL_YOUR
+            button.method = "on_mine"
+            button.disabled = not played(self.guild)
+            button.style = _lit(on)
+            return button
+        button.label = LABEL_NEW_LIST
+        button.method = "on_new"
+        button.disabled = False
+        button.style = discord.ButtonStyle.secondary
+        return button
 
     def _narrow(self, count: int) -> discord.ui.Button:
+        button = self._narrow_button
+        button.index = None
         if self.panel in (QUEUE, HISTORY):
-            return _Mark(LABEL_EMPTY, "on_empty", disabled=count == 0)
+            button.label = LABEL_EMPTY
+            button.method = "on_empty"
+            button.disabled = count == 0
+            button.style = discord.ButtonStyle.secondary
+            return button
         ready = self.opened is not None and count > 0
-        return _Mark(LABEL_REMOVE, "on_remove", disabled=not ready, style=_lit(self._removing and ready))
+        button.label = LABEL_REMOVE
+        button.method = "on_remove"
+        button.disabled = not ready
+        button.style = _lit(self._removing and ready)
+        return button
 
     def _page_line(self, pages: int, count: int, noun: str, duration: int | None) -> str:
         if self.panel == PLAYLISTS and self.opened is None:

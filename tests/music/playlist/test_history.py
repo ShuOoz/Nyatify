@@ -9,7 +9,7 @@ import discord
 from cogs.osa_musify import OsaMusify
 from guild import GuildConfig
 from music.panel import LABEL_PLAYER, MARK_ADD, MARK_BACK, MARK_CLOSE, MARK_NEXT
-from music.player.view import MusicPlayer
+from music.player.card import MusicPlayer
 from music.playlist.card import (
     LiveLine,
     HISTORY,
@@ -61,6 +61,12 @@ async def test_an_empty_queue_opens_the_player_when_a_song_starts(monkeypatch):
         guild.voice_client = None
         assert [row.title for row in played(guild)] == ["Beta", "Alpha"]
 
+        async def connect(*_args, **_kwargs):
+            guild.voice_client = player
+            return player
+
+        member.voice.channel.connect = AsyncMock(side_effect=connect)
+
         cog = OsaMusify(MagicMock())
         monkeypatch.setattr(MusicPlayer, "follow", lambda self, message: None)
         interaction = _ask()
@@ -92,7 +98,7 @@ async def test_an_empty_queue_opens_the_player_when_a_song_starts(monkeypatch):
         await _button(view, MARK_ADD, 0).callback(added)
         added.channel.send.assert_not_awaited()
         assert [row.title for row in queued(guild)] == ["Beta", "Alpha"]
-        assert "Added Alpha" in added.send.await_args.args[0]
+        added.send.assert_not_awaited()
         assert "Alpha" not in _text(view)
     finally:
         if panel is not None:
@@ -193,7 +199,8 @@ async def test_sweep_drops_every_played_song(tmp_path):
         await _answer_empty(view, press, "yes")
         assert played(guild) == []
         assert [row.title for row in queued(guild)] == ["Beta", "Gamma"]
-        assert all(row.playing is False for row in queued(guild))
+        # The bot is out, so Beta is the saved song. It is not one of the waiting ones.
+        assert [row.playing for row in queued(guild)] == [True, False]
         player.stop.assert_not_awaited()
         text = _text(view)
         assert "-# Nothing has played yet" in text

@@ -57,6 +57,9 @@ class _Player(wavelink.Player):
 
     @property
     def position(self):
+        # Wavelink reports its last mark while paused, and that mark can be the start.
+        if self._paused and getattr(self, "_paused_mark", False):
+            return getattr(self, "_last_position", 0) or 0
         return self._position
 
     @property
@@ -81,6 +84,17 @@ def _ask():
     interaction.guild.id = 31
     return interaction
 
+def _hearing(guild):
+    """Attach a song so opening the player is allowed."""
+    channel = MagicMock()
+    channel.id = 19
+    voice = _Player(channel)
+    voice._track = _named("Song")
+    voice._guild = guild
+    guild.voice_client = voice
+    return voice
+
+
 def _named(title: str, author: str = "") -> MagicMock:
     track = MagicMock()
     track.title = title
@@ -97,6 +111,7 @@ def _press(player):
     interaction = MagicMock()
     interaction.response.is_done.return_value = False
     interaction.response.edit_message = AsyncMock()
+    interaction.response.defer = AsyncMock()
     interaction.user.voice.channel = player.channel
     return interaction
 

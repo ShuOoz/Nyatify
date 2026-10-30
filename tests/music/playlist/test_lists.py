@@ -151,7 +151,7 @@ async def test_new_playlist_asks_for_a_name_and_lists_it(tmp_path):
         (PICK, False),
         ("Evening", True),
     ]
-    assert _button(view, MARK_MINUS).label == MARK_MINUS
+    assert _button(view, MARK_DELETE).label == MARK_DELETE
     assert _button(view, LABEL_REMOVE).disabled is True
 
     back = next(option.value for option in open_menu.options if option.label == PICK)
@@ -285,14 +285,14 @@ async def test_an_open_list_drops_a_song_and_then_itself(tmp_path):
     menu._values = ["Evening"]
     await menu.callback(press)
     _gap_under_menu(view)
-    assert _button(view, MARK_MINUS).label == MARK_MINUS
+    assert _button(view, MARK_DELETE).label == MARK_DELETE
     assert _button(view, LABEL_REMOVE).disabled is False
     assert _button(view, LABEL_REMOVE).style == discord.ButtonStyle.secondary
     assert _button(view, MARK_ADD, 0).label == MARK_ADD
 
     await _button(view, LABEL_REMOVE).callback(press)
     assert _button(view, LABEL_REMOVE).style == discord.ButtonStyle.primary
-    await _button(view, MARK_DELETE, 0).callback(press)
+    await _button(view, MARK_MINUS, 0).callback(press)
     assert [item.title for item in find_playlist(store, guild.id, "Evening").songs] == ["Two"]
     assert "One" not in _text(view)
     assert "Two" in _text(view)
@@ -302,7 +302,7 @@ async def test_an_open_list_drops_a_song_and_then_itself(tmp_path):
         ("Evening", "1 song", True),
     ]
 
-    await _button(view, MARK_MINUS).callback(press)
+    await _button(view, MARK_DELETE).callback(press)
     modal = press.response.send_modal.await_args.args[0]
     assert modal.title == "Remove"
     assert modal.query.description == remove_hint()
@@ -315,7 +315,7 @@ async def test_an_open_list_drops_a_song_and_then_itself(tmp_path):
     assert list_playlists(store, guild.id) == []
     assert _menu(view).placeholder == PICK
     assert _button(view, MARK_SEARCH).label == MARK_SEARCH
-    assert _button(view, MARK_MINUS).disabled is True
+    assert _button(view, MARK_DELETE).disabled is True
     assert _button(view, LABEL_REMOVE).disabled is True
 
 async def test_a_stale_delete_reloads_the_open_list(tmp_path):
@@ -339,7 +339,7 @@ async def test_a_stale_delete_reloads_the_open_list(tmp_path):
         assert isinstance(drop_song(store, guild.id, "Evening", 0), SavedList)
         assert "One" in _text(view)
         gone = _press()
-        await _button(view, MARK_DELETE, 1).callback(gone)
+        await _button(view, MARK_MINUS, 1).callback(gone)
         assert "That song is gone" in gone.send.await_args.args[0]
         assert [song.title for song in view.opened.songs] == ["Two"]
         assert "One" not in _text(view)
@@ -347,7 +347,7 @@ async def test_a_stale_delete_reloads_the_open_list(tmp_path):
 
         assert isinstance(delete_playlist(store, guild.id, "Evening"), SavedList)
         removed = _press()
-        await _button(view, MARK_DELETE, 0).callback(removed)
+        await _button(view, MARK_MINUS, 0).callback(removed)
         assert "That playlist is gone" in removed.send.await_args.args[0]
         assert view.opened is None
         assert "Two" not in _text(view)
@@ -846,8 +846,8 @@ async def test_a_song_saved_while_artists_are_read_stays(monkeypatch, tmp_path):
     await menu.callback(press)
     saved = find_playlist(store, guild.id, "Evening")
     assert [(song.title, song.author, song.length) for song in saved.songs] == [
-        ("Kept", "Chet Baker", 182_000),
         ("Extra", "New", 2_000),
+        ("Kept", "Chet Baker", 182_000),
     ]
     assert "Extra" in _text(view)
     assert "Chet Baker · 3:02" in _text(view)

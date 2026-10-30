@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
 
 import wavelink
 
@@ -46,17 +46,17 @@ NAME_PLATFORM = "apple"
 MATCHES = 25
 PREVIEW_MS = 30_000
 
-# The phrase is what gets searched. A single genre word matches titles.
+# Spotify's own list of new songs in that genre. The button plays one of them.
 GENRES = (
-    ("Jazz", "jazz piano"),
-    ("Classical", "classical piano"),
-    ("Lo-fi", "lofi hip hop"),
-    ("Rock", "classic rock"),
-    ("Pop", "dance pop"),
-    ("Electronic", "electronic dance"),
-    ("Hip hop", "hip hop rap"),
-    ("R&B", "r&b soul"),
-    ("Ambient", "ambient instrumental"),
+    ("Jazz", "https://open.spotify.com/playlist/37i9dQZF1DXcWL5K0oNHcG"),
+    ("Classical", "https://open.spotify.com/playlist/37i9dQZF1DWV0gynK7G6pD"),
+    ("Lo-fi", "https://open.spotify.com/playlist/37i9dQZF1DX3SNr5BeQZSd"),
+    ("Rock", "https://open.spotify.com/playlist/37i9dQZF1DWZryfp6NSvtz"),
+    ("Pop", "https://open.spotify.com/playlist/37i9dQZF1DX11otjJ7crqp"),
+    ("Electronic", "https://open.spotify.com/playlist/37i9dQZF1DXa41CMuUARjl"),
+    ("Hip hop", "https://open.spotify.com/playlist/37i9dQZF1DX4SrOBCjlfVi"),
+    ("R&B", "https://open.spotify.com/playlist/37i9dQZF1DWUzFXarNiofw"),
+    ("Ambient", "https://open.spotify.com/playlist/37i9dQZF1DX9c7yCloFHHL"),
 )
 
 # Five long uploads. A livestream dies after a few seconds, so these are ordinary videos.
@@ -298,6 +298,38 @@ def _spotify_url(url: str) -> str | None:
     if len(parts) < 2 or parts[0] not in _SPOTIFY:
         return None
     return f"https://open.spotify.com/{parts[0]}/{parts[1]}"
+
+
+def spotify_album(url: str) -> str | None:
+    """The https album address. Spotify also sends spotify:album:{id}."""
+    text = " ".join(url.split())
+    if text.lower().startswith("spotify:album:"):
+        ident = text.split(":", 2)[-1].split("?", 1)[0].strip()
+        if ident and ident.lower() != "local":
+            return f"https://open.spotify.com/album/{ident}"
+    page = _spotify_url(text)
+    if page and "/album/" in page:
+        return page
+    return None
+
+
+def apple_album(url: str) -> tuple[str, str] | None:
+    """Album name and address from an Apple song link.
+
+    The song address is /album/{name}/{id}?i={song}. The album is that link without ?i=.
+    """
+    parsed = urlparse(url)
+    if _site(url) != "music.apple.com":
+        return None
+    parts = [unquote(part) for part in parsed.path.split("/") if part]
+    if len(parts) < 4 or len(parts[0]) != 2 or parts[1].lower() != "album":
+        return None
+    slug, album_id = parts[2], parts[3]
+    if not album_id or slug.isdigit():
+        return None
+    name = " ".join(word.capitalize() for word in slug.replace("-", " ").split())
+    address = f"https://music.apple.com/{parts[0]}/album/{slug}/{album_id}"
+    return name, address
 
 
 def _apple_song(url: str) -> str | None:

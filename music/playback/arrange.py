@@ -8,11 +8,12 @@ import logging
 from contextlib import asynccontextmanager
 
 from music import source
+from music.lavalink import joining
 
 from music.playback.remember import (
     HISTORY_SONGS, PlayState, Queued, _CHANGED, _Line, _OPEN_AT_ONCE, _Song,
     _active, _coming, _end_saved, _guild_id, _heard, _hold, _http,
-    _on_air, _playlist_skips, _queued_index, _recall, _requesters,
+    _on_air, _order_drop, _playlist_skips, _promote_waiting, _queued_index, _recall, _requesters,
     _saved_generation, _saved_lock_for, _saved_task, _song_name, _store, _stored,
     _stream, _text, _voice_player, _whole, paint_soon, playing_note,
 )
@@ -27,16 +28,41 @@ _START_FAILED = "Something went wrong while starting the song."
 
 
 def now_playing(guild: object | None) -> PlayState | None:
-    """Empty while the bot is out of voice, even when a queue is saved."""
-    if guild is None or getattr(guild, "voice_client", None) is None:
+    """The song on now. A restart still shows the one that was playing or paused.
+
+    Empty when the bot is out of voice and no song was left on.
+    """
+    if guild is None:
         return None
+    guild_id = _guild_id(guild)
+    if guild_id is not None:
+        _recall(guild_id)
     player = _voice_player(guild)
     line = _stored(guild)
-    track = None if player is None else player.current
+    in_voice = getattr(guild, "voice_client", None) is not None
+    live = None if player is None else player.current
+    if line is not None and line.current is None and live is not None:
+        _claim_current(line, live, guild)
+    if live is None and _promote_waiting(line):
+        _store(guild)
+    _rest_if_left(guild, line, live, in_voice)
+    if player is not None and line is not None and line.resting and live is not None:
+        line.resting = False
+        line.paused = player.paused is True
+    track = live
+    if track is None and line is not None and line.resting and line.current is not None:
+        track = line.current.track
+    if track is None and not in_voice:
+        return None
     channel = None if player is None else getattr(player, "channel", None)
     coming = _coming(line, track)
     length = _whole(getattr(track, "length", None)) or 0
-    position = (_whole(getattr(player, "position", None)) or 0) if track else 0
+    position = (_whole(getattr(player, "position", None)) or 0) if live is not None else 0
+    paused = player.paused is True if live is not None else bool(line is not None and line.paused)
+    # Pausing keeps the last update, and that update can be the start of the song.
+    # The spot saved at the pause is the one the song was actually on.
+    if paused and line is not None and line.spot > position:
+        position = line.spot
     if length:
         position = min(max(0, position), length)
     return PlayState(
@@ -46,7 +72,7 @@ def now_playing(guild: object | None) -> PlayState | None:
         _http(getattr(track, "artwork", None)) if track else None,
         position,
         length,
-        track is not None and player.paused is True,
+        paused,
         _who_asked(guild, line, track) if track else None,
         _whole(getattr(channel, "id", None)),
         100 if line is None else line.volume,
@@ -54,7 +80,24 @@ def now_playing(guild: object | None) -> PlayState | None:
         track is not None,
         track is not None and _on_air(line, track),
         line is not None and line.repeat,
+        line is not None and line.shuffle,
+        line is not None and line.radio,
     )
+
+
+def _rest_if_left(guild: object, line: _Line | None, live: object, in_voice: bool) -> None:
+    """The voice link is gone and the line still holds a song as if it were on the air.
+
+    A pause that ended in a leave, a dropped link, or a reload can leave the
+    line behind without the usual release. Nothing is playing that song, so it
+    is the saved one, the same as after a restart. Left as it was, the player
+    read "Nothing is playing" and the queue listed the song as a waiting one.
+    """
+    if line is None or line.current is None or line.resting or live is not None or in_voice:
+        return
+    if joining(guild) is not None:
+        return
+    line.resting = True
 
 
 def _who_asked(guild: object, line: _Line | None, track: object) -> int | None:
@@ -112,6 +155,7 @@ def _claim_current(line: _Line, track: object, guild: object | None = None) -> N
     if index is None:
         return
     line.current = line.later.pop(index)
+    _order_drop(line, line.current)
     requester = line.current.requester_id
     guild_id = _guild_id(guild)
     if requester is not None and guild_id is not None and guild_id not in _requesters:
@@ -173,21 +217,21 @@ def _slot(rows: list[Queued], index: int) -> int:
     return index - bool(rows[0].playing)
 
 
-async def drop_queued(guild: object | None, index: int) -> str | None:
+async def drop_queued(guild: object | None, index: int, member: object | None = None) -> str | None:
     async with _editing(guild) as touch:
         rows = queued(guild)
         missing = _listed(rows, index)
         if missing or rows is None:
             return missing
         if rows[index].playing:
-            note = await _module("music.playback.control")._advance_line(guild)
+            note = await _module("music.playback.control")._advance_line(guild, member)
             touch()
             return note
         line = _stored(guild)
         slot = _slot(rows, index)
         if line is None or not 0 <= slot < len(line.later):
             return _GONE
-        line.later.pop(slot)
+        _order_drop(line, line.later.pop(slot))
         if not line.later:
             line.whole = False
         _store(guild)
@@ -226,6 +270,7 @@ async def clear_queued(guild: object | None) -> None:
         line = _stored(guild)
         if line is not None and (line.later or line.whole):
             line.later.clear()
+            line.order.clear()
             line.whole = False
             _store(guild)
             touch()
@@ -268,6 +313,7 @@ def _keep_current(guild: object) -> None:
     song = line.current
     # Stop drops the queue, so another copy waiting there does not hide this play.
     line.later = [item for item in line.later if not _same_song(item, song)]
+    line.order = [item for item in line.order if not _same_song(item, song)]
     _keep_earlier(guild, line, song)
 
 

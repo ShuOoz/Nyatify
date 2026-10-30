@@ -37,16 +37,16 @@ def test_a_saved_song_keeps_its_link(tmp_path):
     assert again.name == "Evening"
     assert again.saver_id == 4
     assert [(item.title, item.platform) for item in again.songs] == [
-        ("One Wish", "youtube"),
         ("Two", "spotify"),
+        ("One Wish", "youtube"),
     ]
     duplicate = save_song(
         store, 7, "Evening", SavedSong("One Wish", "youtube", "https://example.com/one"), 4,
     )
     assert duplicate == "One Wish is already in the playlist."
     assert [item.title for item in find_playlist(store, 7, "Evening").songs] == [
-        "One Wish",
         "Two",
+        "One Wish",
     ]
     reloaded = GuildConfig(store.path)
     assert find_playlist(reloaded, 7, "EVENING").songs == again.songs
@@ -58,10 +58,10 @@ def test_a_saved_song_keeps_its_link(tmp_path):
         4,
     )
     assert isinstance(rich, SavedList)
-    assert rich.songs[-1] == SavedSong(
+    assert rich.songs[0] == SavedSong(
         "Three", "apple", "https://example.com/three", "Mac Ayres", 182_000,
     )
-    assert find_playlist(GuildConfig(store.path), 7, "Evening").songs[-1] == rich.songs[-1]
+    assert find_playlist(GuildConfig(store.path), 7, "Evening").songs[0] == rich.songs[0]
 
     store.set_guild_list(8, SAVED_LISTS, [
         "nope",
@@ -132,7 +132,7 @@ def test_the_same_recording_is_saved_once(tmp_path):
         4,
     )
     assert isinstance(spotify, SavedList)
-    assert spotify.songs[-1].url == "https://open.spotify.com/track/xyz"
+    assert spotify.songs[0].url == "https://open.spotify.com/track/xyz"
     duplicate = save_song(
         store,
         7,
@@ -154,7 +154,7 @@ def test_the_same_recording_is_saved_once(tmp_path):
     )
     assert isinstance(made, SavedList)
     assert [song.title for song in made.songs] == ["One", "Tail"]
-    assert [song.title for song in find_playlist(store, 7, "Evening").songs] == ["One", "Two"]
+    assert [song.title for song in find_playlist(store, 7, "Evening").songs] == ["Two", "One"]
 
 def test_a_server_keeps_five_playlists_of_a_hundred_songs(tmp_path):
     store = GuildConfig(tmp_path / "guild.json")
