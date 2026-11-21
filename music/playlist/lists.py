@@ -23,8 +23,9 @@ from music.playlist.card import (
     empty_text, pick_text, saved_row,
 )
 from music.source import (
-    canonical_url, import_link, is_link, kept_url, needs_redirect, platform_line,
-    remembered_share, track_query, unplayable, follow_redirect,
+    canonical_url, import_link, is_link, kept_url, needs_redirect, netease_songs,
+    platform_key, platform_line, request_mode, song_link, track_query, unplayable,
+    follow_redirect,
 )
 
 log = logging.getLogger(__name__)
@@ -54,7 +55,7 @@ def _imported(found: object) -> tuple[list[SavedSong], int]:
     site = platform if isinstance(platform, str) else "youtube"
     songs, seen = [], set()
     for track in tracks:
-        raw = remembered_share(track) or getattr(track, "uri", None)
+        raw = song_link(track)
         url = kept_url(raw) if isinstance(raw, str) and raw.startswith(("http://", "https://")) else ""
         ident = canonical_url(url) if url else ""
         if not ident or ident in seen:
@@ -182,11 +183,20 @@ class _Lists:
         found = await find_songs(interaction.guild, query)
         if isinstance(found, str):
             return found
-        songs, left = _imported(found)
+        # NodeLink only fills the first page, and every row carries the playlist address.
+        filled = None
+        if request_mode(query) == "playlist" and platform_key(query) == "netease":
+            filled = await netease_songs(query, limit=SONG_LIMIT)
+        if filled is None:
+            songs, left = _imported(found)
+            label = found.name or ""
+        else:
+            label, rows, left = filled
+            songs = [SavedSong(title, "netease", url, author, length) for title, url, author, length in rows]
         if not songs:
             return "That playlist has no songs."
         # A taken name becomes "Name 2". The songs still land on a new list.
-        name = _free_name(self.store, guild_id, playlist_name(found.name or "") or "Playlist")
+        name = _free_name(self.store, guild_id, playlist_name(label) or "Playlist")
         created = create_playlist(self.store, guild_id, name, _person(interaction.user), tuple(songs))
         return created if isinstance(created, str) else (created, left)
 

@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import logging
 import random
+import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
@@ -116,19 +117,33 @@ def _http(value: object) -> str | None:
     return value if isinstance(value, str) and value.startswith(("http://", "https://")) else None
 
 _COVER_PX = 300
+# Apple puts the pixel size in the last segment, including the {w}x{h} template.
+_APPLE_SIZE = re.compile(
+    r"^(?:\{[wh]\}|\d+)x(?:\{[wh]\}|\d+)[a-z]{0,4}(?:-\d+)?\.(?:jpe?g|png|webp)$",
+    re.IGNORECASE,
+)
 
 def cover_url(value: object) -> str | None:
-    """A picture the card can show. NetEase covers are requested at a small size."""
+    """A picture the card can show. A cover is asked for small, so Discord can load it."""
     url = _http(value)
     if url is None:
         return None
     parts = urlsplit(url)
     host = parts.netloc.lower().split(":", 1)[0]
-    if host != "music.126.net" and not host.endswith(".music.126.net"):
-        return url
-    query = [(key, item) for key, item in parse_qsl(parts.query, keep_blank_values=True) if key != "param"]
-    query.append(("param", f"{_COVER_PX}y{_COVER_PX}"))
-    return urlunsplit(("https", parts.netloc, parts.path, urlencode(query), ""))
+    if host == "music.126.net" or host.endswith(".music.126.net"):
+        query = [(key, item) for key, item in parse_qsl(parts.query, keep_blank_values=True) if key != "param"]
+        query.append(("param", f"{_COVER_PX}y{_COVER_PX}"))
+        return urlunsplit(("https", parts.netloc, parts.path, urlencode(query), ""))
+    if host == "mzstatic.com" or host.endswith(".mzstatic.com"):
+        return urlunsplit(("https", parts.netloc, _apple_cover(parts.path), parts.query, ""))
+    return url
+
+def _apple_cover(path: str) -> str:
+    """The full Apple file is thousands of pixels. That size does not load on the card."""
+    head, _, tail = path.rpartition("/")
+    if not head or _APPLE_SIZE.match(tail) is None:
+        return path
+    return f"{head}/{_COVER_PX}x{_COVER_PX}bb.jpg"
 
 def _guild_id(guild: object | None) -> int | None: return _number(getattr(guild, "id", None))
 
@@ -392,14 +407,22 @@ def _placed(line: _Line | None, track: object) -> tuple[_Song | None, _Song | No
 def _coming(line: _Line | None, track: object) -> _Song | None:
     return _placed(line, track)[1]
 
+def _same_recording(left: object, right: object) -> bool:
+    """The same video. A different spelling of the address still counts."""
+    one, two = _http(getattr(left, "uri", None)), _http(getattr(right, "uri", None))
+    if one and two:
+        return source.same_url(one, two)
+    return _same_track(left, right)
+
 def _on_air(line: _Line | None, track: object) -> bool:
     if _stream(track): return True
     song = _placed(line, track)[0]
+    if song is not None:
+        _note_station(song)
     if song is None or not song.videos: return False
     # Still parked on the queue after a reload. The live track was already matched.
     if song is not line.current or song.track is track: return True
-    left, right = _http(getattr(song.track, "uri", None)), _http(getattr(track, "uri", None))
-    return left == right if left and right else _same_track(song.track, track)
+    return _same_recording(song.track, track)
 
 def _spread(later: list[_Song], songs: list[_Song], *, mix: bool) -> None:
     if not mix:
@@ -464,7 +487,7 @@ def _who_asked(guild: object, line: _Line | None, track: object) -> int | None:
     guild_id = _guild_id(guild)
     return None if guild_id is None else _requesters.get(guild_id)
 
-from music.playback.arrange import _adopt_previous, _recall, _store
+from music.playback.arrange import _adopt_previous, _note_station, _recall, _store
 
 def now_playing(guild: object | None) -> PlayState | None:
     """The song on now. A restart still shows one left playing or paused, and nothing when voice is empty."""

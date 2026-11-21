@@ -352,8 +352,31 @@ async def case_a_failed_skip_leaves_the_song_playing():
         if guild.voice_client is not None:
             await stop_track(guild)
 
+async def case_radio_on_a_saved_song_does_not_need_a_player():
+    """The bot has left. Radio changes the saved song, and a station still cannot start it."""
+    from music.playback.remember import _Line, _Song, _lines
+
+    guild = MagicMock()
+    guild.id = 9109
+    guild.voice_client = None
+    await stop_track(guild)
+    track = _named("Saved")
+    _lines[9109] = _Line(current=_Song(track, 9, "youtube"), paused=True, resting=True)
+    away = MagicMock()
+    away.id = 4
+    away.voice = None
+    try:
+        assert await toggle_radio(guild, away) == "You need a Last.fm key to do this."
+        assert _lines[9109].radio is False
+        track.is_stream = True
+        assert await toggle_radio(guild, away) == "A station cannot start radio."
+        assert _lines[9109].radio is False
+    finally:
+        await stop_track(guild)
+
 async def test_radio_plays_a_similar_song(monkeypatch):
     """A similar song skips a preview and waits. Adding keeps the station. Radio queues a match, draws another song, and a finished station plays the queue."""
+    await case_radio_on_a_saved_song_does_not_need_a_player()
     case_a_replaced_line_keeps_the_song_the_station_started_on()
     await _scene(case_a_similar_song_skips_a_preview_and_waits, monkeypatch=monkeypatch)
     await _scene(case_adding_during_radio_keeps_the_station, monkeypatch=monkeypatch)
@@ -815,7 +838,7 @@ async def case_radio_stays_about_the_song_that_started_it(monkeypatch):
 
 
 async def case_radio_plays_a_title_the_site_spells_differently(monkeypatch):
-    """Last.fm writes Don't. The recording writes Don’t. That is still the song, and it plays."""
+    """Last.fm writes Don't. The recording writes Don’t. That is still the song, and the next draw leaves it."""
     guild, player, track = await _playing()
     try:
         track.identifier = "now"
@@ -823,21 +846,45 @@ async def case_radio_plays_a_title_the_site_spells_differently(monkeypatch):
             title="Don\u2019t Look Back in Anger", author="Oasis", identifier="anger",
             length=180_000, is_preview=False,
         )
+        later = MagicMock(
+            title="Live Forever", author="Oasis", identifier="forever",
+            length=180_000, is_preview=False,
+        )
+
+        async def search(query, _platform, node=None):
+            if "Live Forever" in query:
+                return [later]
+            return [found]
+
         monkeypatch.setattr("music.player.radio.settings.lastfm_api_key", "fm-key")
         monkeypatch.setattr(
             "music.player.radio.load_similar",
-            AsyncMock(return_value=[("Oasis", "Don't Look Back in Anger")]),
+            AsyncMock(return_value=[("Oasis", "Don't Look Back in Anger"), ("Oasis", "Live Forever")]),
+        )
+        monkeypatch.setattr(
+            "music.player.radio.weighted_order",
+            lambda weights, rolls: list(range(len(weights))),
         )
         monkeypatch.setattr("music.player.radio.top_tracks", AsyncMock(return_value=[]))
         monkeypatch.setattr("music.player.radio.similar_artists", AsyncMock(return_value=[]))
-        monkeypatch.setattr("music.source.search_track", AsyncMock(return_value=[found]))
+        monkeypatch.setattr("music.source.search_track", search)
         assert await toggle_radio(guild) is None
+        await _finish_radio()
         player._guild = guild
         player._last_position = 180_000
         await advance_from_end(type("End", (), {"reason": "finished", "player": player})())
         assert now_playing(guild).title == "Don\u2019t Look Back in Anger"
         assert _stored(guild).radio is True
         assert _stored(guild).later == []
+        await _finish_radio()
+        player._last_position = 180_000
+        await advance_from_end(type("End", (), {"reason": "finished", "player": player})())
+        assert now_playing(guild).title == "Live Forever"
+        await _finish_radio()
+        player._last_position = 180_000
+        await advance_from_end(type("End", (), {"reason": "finished", "player": player})())
+        stayed = _stored(guild)
+        assert stayed is None or stayed.current is None or stayed.current.track is not found
     finally:
         if guild.voice_client is not None:
             await stop_track(guild)

@@ -487,6 +487,25 @@ def case_a_saved_station_still_reads_the_old_video_list():
     assert saved["videos"] == list(song.videos)
     assert saved["video_at"] == 1
     assert "lives" not in saved
+    bare = playback._load_song({
+        "title": "lofi hip hop mix",
+        "url": "https://www.youtube.com/watch?v=8b3fqIBrNW0",
+        "platform": "youtube",
+    })
+    assert bare is not None and bare.station == "lofi" and bare.video_at == 3
+    assert "https://www.youtube.com/watch?v=8b3fqIBrNW0" in bare.videos
+    spelled = playback._load_song({
+        "title": "lofi hip hop mix",
+        "url": "https://music.youtube.com/watch?v=8b3fqIBrNW0&list=RD",
+        "platform": "youtube",
+    })
+    plain = playback._load_song({
+        "title": "Not a station",
+        "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "platform": "youtube",
+    })
+    assert spelled is not None and spelled.station == "lofi" and spelled.video_at == 3
+    assert plain is not None and plain.videos == () and plain.station == ""
     assert "live_at" not in saved
 
 async def case_a_reload_keeps_the_platform_of_the_song_still_playing():

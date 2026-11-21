@@ -63,10 +63,12 @@ def mode_press(
     *,
     live: bool,
     stuck: bool,
+    station: bool = False,
 ) -> tuple[str, bool] | None:
     """The next frame for a mode button. None when that press does nothing.
 
-    A stream can leave repeat. It cannot enter it.
+    A stream can leave repeat. It cannot enter it. A station can leave
+    Last.fm radio. It cannot enter it.
     """
     if kind == "repeat":
         if stuck and not repeating:
@@ -77,7 +79,7 @@ def mode_press(
             return None
         return ("shuffle", not shuffling)
     if kind == "radio":
-        if not live:
+        if not live or (station and not radio):
             return None
         return ("radio", not radio)
     return None

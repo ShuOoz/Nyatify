@@ -31,6 +31,7 @@ from music.playback import (
     next_track,
     play_now,
     now_playing,
+    toggle_radio,
     previous_track,
     queue_tracks,
     queued,
@@ -99,7 +100,7 @@ async def test_an_idle_player_leaves_only_close():
     track.length = 0
     assert view.paint() is True
     assert view.next.disabled is False
-    assert view.radio.disabled is False
+    assert view.radio.disabled is True
     assert view.shuffle.disabled is False
     assert view.repeat.disabled is True
     assert view.timeout is None
@@ -151,6 +152,22 @@ async def test_player_card_shows_the_current_song():
         netease = [item for item in covered.walk_children() if isinstance(item, discord.ui.Thumbnail)]
         assert [thumb.media.url for thumb in netease] == [
             "https://p3.music.126.net/abc==/9.jpg?foo=1&param=300y300"
+        ]
+        track.artwork = (
+            "http://is1-ssl.mzstatic.com/image/thumb/Music118/v4/17/5d/dc/"
+            "175ddc4a/190295556457.jpg/4000x4000bb.jpg"
+        )
+        apple = MusicPlayer(guild)
+        large = [item for item in apple.walk_children() if isinstance(item, discord.ui.Thumbnail)]
+        assert [thumb.media.url for thumb in large] == [
+            "https://is1-ssl.mzstatic.com/image/thumb/Music118/v4/17/5d/dc/"
+            "175ddc4a/190295556457.jpg/300x300bb.jpg"
+        ]
+        track.artwork = "https://is2-ssl.mzstatic.com/image/thumb/Music/v4/a/{w}x{h}bb.webp"
+        templated = MusicPlayer(guild)
+        blank = [item for item in templated.walk_children() if isinstance(item, discord.ui.Thumbnail)]
+        assert [thumb.media.url for thumb in blank] == [
+            "https://is2-ssl.mzstatic.com/image/thumb/Music/v4/a/300x300bb.jpg"
         ]
         track.artwork = "https://example.com/art.jpg"
         assert view.pause.disabled is False
@@ -726,6 +743,13 @@ async def case_repeat_and_shuffle_only_change_the_mode_when_nothing_is_on():
         message.edit = AsyncMock()
         message.delete = AsyncMock()
         view.follow(message)
+        track = player._track
+        track.is_stream = True
+        track.length = 0
+        assert view.paint() is True
+        assert view.radio.disabled is True
+        track.is_stream = False
+        track.length = 148_000
         player._track = None
         press = _press(player)
         press.response.send_message = AsyncMock()
@@ -737,6 +761,7 @@ async def case_repeat_and_shuffle_only_change_the_mode_when_nothing_is_on():
         assert view._closed is False
         assert view.repeat.style == discord.ButtonStyle.primary
         assert view.shuffle.style == discord.ButtonStyle.secondary
+        assert view.radio.disabled is False
         text = _card_text(view)
         assert "On Repeat" in text
         assert "Up next: After" in text
@@ -906,6 +931,33 @@ async def test_a_station_has_no_bar():
     """A station has no time bar and can be skipped. Repeat can still turn off."""
     await case_a_radio_station_has_no_time_bar_and_can_be_skipped()
     await case_repeat_can_turn_off_while_a_stream_is_on()
+    await case_a_menu_radio_greys_lastfm_when_the_note_was_lost()
+
+async def case_a_menu_radio_greys_lastfm_when_the_note_was_lost():
+    """A Play-menu radio saved as a plain video is still a station. Last.fm stays off."""
+    guild, player, track = await _playing()
+    try:
+        song = _stored(guild).current
+        song.videos = ()
+        song.station = ""
+        song.track.uri = "https://www.youtube.com/watch?v=8b3fqIBrNW0"
+        live = MagicMock()
+        live.title = "lofi hip hop mix"
+        live.author = "Lofi Girl"
+        live.uri = "https://music.youtube.com/watch?v=8b3fqIBrNW0&list=RD"
+        live.artwork = track.artwork
+        live.length = 14_701_000
+        live.is_stream = False
+        player._track = live
+        view = MusicPlayer(guild)
+        assert view.radio.disabled is True
+        assert "-# On Radio\n" in _card_text(view)
+        assert song.station == "lofi"
+        assert song.videos
+        assert await toggle_radio(guild) == "A station cannot start radio."
+    finally:
+        if guild.voice_client is not None:
+            await stop_track(guild)
 
 async def case_a_radio_station_has_no_time_bar_and_can_be_skipped():
     guild, player, track = await _playing()
@@ -916,12 +968,23 @@ async def case_a_radio_station_has_no_time_bar_and_can_be_skipped():
         view = MusicPlayer(guild)
         text = _card_text(view)
         assert "Volume" not in text
-        assert RADIO_MARK in text
+        assert "-# On Radio\n" in text
+        assert RADIO_MARK not in text
         assert "━" not in text
         assert not any(isinstance(item, discord.ui.MediaGallery) for item in view.walk_children())
         assert view.repeat.disabled is True
+        assert view.radio.disabled is True
         assert view.shuffle.disabled is False
         assert view.next.disabled is False
+        assert await toggle_radio(guild) == "A station cannot start radio."
+        assert _stored(guild).radio is False
+        _stored(guild).radio = True
+        assert view.paint() is True
+        assert view.radio.disabled is False
+        assert view.radio.style == discord.ButtonStyle.primary
+        _stored(guild).radio = False
+        assert view.paint() is True
+        assert view.radio.disabled is True
         player.seek.reset_mock()
         assert await previous_track(guild) == "Nothing is before this."
         player.seek.assert_not_awaited()
@@ -938,7 +1001,8 @@ async def case_a_radio_station_has_no_time_bar_and_can_be_skipped():
         assert "### Now Playing" in text
         assert "I Ain't Worried" in text
         assert "After" in text
-        assert text.count(RADIO_MARK) == 1
+        assert "OneRepublic · Radio" in text
+        assert RADIO_MARK not in text
 
         assert await next_track(guild) is None
         assert now_playing(guild).title == "After"
@@ -946,6 +1010,7 @@ async def case_a_radio_station_has_no_time_bar_and_can_be_skipped():
         song = MusicPlayer(guild)
         assert RADIO_MARK not in _card_text(song)
         assert song.next.disabled is False
+        assert song.radio.disabled is False
         later.length = 0
         missing = MusicPlayer(guild)
         assert missing.next.disabled is False
@@ -956,12 +1021,15 @@ async def case_a_radio_station_has_no_time_bar_and_can_be_skipped():
         _stored(guild).current.videos = ("https://www.youtube.com/watch?v=long",)
         held = MusicPlayer(guild)
         held_text = _card_text(held)
-        assert RADIO_MARK in held_text
+        assert "-# On Radio\n" in held_text
+        assert RADIO_MARK not in held_text
         assert "━" not in held_text
         assert any(isinstance(item, discord.ui.MediaGallery) for item in held.walk_children())
         assert held.next.disabled is False
+        assert held.radio.disabled is True
         held_line = PlaylistCard(guild, MagicMock())
-        assert RADIO_MARK in _card_text(held_line)
+        assert " · Radio" in _card_text(held_line)
+        assert RADIO_MARK not in _card_text(held_line)
     finally:
         if guild.voice_client is not None:
             await stop_track(guild)
@@ -981,11 +1049,17 @@ async def case_repeat_can_turn_off_while_a_stream_is_on():
         assert view.paint() is True
         assert view.repeat.disabled is False
         assert view.repeat.style == discord.ButtonStyle.primary
+        assert view.radio.disabled is True
+        assert "-# On Repeat\n" in _card_text(view)
+        assert RADIO_MARK in _card_text(view)
 
         await view.repeat.callback(press)
         assert _stored(guild).repeat is False
         assert view.repeat.style == discord.ButtonStyle.secondary
         assert view.repeat.disabled is True
+        text = _card_text(view)
+        assert "-# On Radio\n" in text
+        assert RADIO_MARK not in text
         press.send.assert_not_called()
     finally:
         if guild.voice_client is not None:

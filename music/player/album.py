@@ -25,7 +25,7 @@ from music.panel import (
     _COVER,
     _clip,
     _hold_card,
-    _link,
+    _head_link,
     _row,
     delete_panel,
     finish_note,
@@ -121,7 +121,7 @@ def _on_album(tracks: list, current: object) -> int | None:
 
 def _album_line(name: str, artist: str, url: str | None) -> str:
     """Album name, then who made it. Wide characters take more of the line than narrow ones."""
-    head = f"### {_link(_clip(_words(name, 'Album')), url)}"
+    head = f"### {_head_link(_clip(_words(name, 'Album')), url)}"
     who = _words(artist)
     return head if not who else f"{head}\n{_clip(f'By {who}', _COVER)}"
 

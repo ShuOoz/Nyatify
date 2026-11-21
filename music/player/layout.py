@@ -42,10 +42,14 @@ def _next_line(upcoming: str) -> str:
     return f"-# {prefix}{name}"
 
 def _status(state: PlayState, *, repeating: bool, shuffling: bool, radio_on: bool = False) -> str:
-    mark = f"\n{RADIO_MARK}" if state.stream else ""
+    mode = _mode(repeating, shuffling, radio_on)
+    # A station is On Radio. The Radio line under On Queue would say it twice.
+    if state.stream and mode == "On Queue":
+        mode = "On Radio"
+    mark = "" if not state.stream or "Radio" in mode else f"\n{RADIO_MARK}"
     # Up next is the queue. Repeat does not rename it to the song that is on.
     upcoming = next_title(state.upcoming)
-    return f"-# {_mode(repeating, shuffling, radio_on)}{mark}\n" + _next_line(upcoming)
+    return f"-# {mode}{mark}\n" + _next_line(upcoming)
 
 def _details(track: object, title: str = "…", author: str = "", uri: str | None = None, artwork: str | None = None):
     return (
@@ -55,10 +59,10 @@ def _details(track: object, title: str = "…", author: str = "", uri: str | Non
     )
 
 def _face(heading, song, status, *, pause=_OFF, pause_off=True, repeat_off=True, repeat=_OFF,
-          controls_off=True, shuffle=_OFF, radio=_OFF, shuffle_off=True) -> tuple:
+          controls_off=True, shuffle=_OFF, radio=_OFF, shuffle_off=True, radio_off=True) -> tuple:
     # Slots the refresh writes: 2 status, 7 repeat style, 9 shuffle style, 10 radio style, 11 shuffle off.
     return (heading, song, status, "", pause, pause_off, repeat_off, repeat,
-            controls_off, shuffle, radio, shuffle_off)
+            controls_off, shuffle, radio, shuffle_off, radio_off)
 
 def held_buttons(
     *,
@@ -67,6 +71,7 @@ def held_buttons(
     repeat_off: bool,
     shuffle_off: bool,
     controls_off: bool,
+    radio_off: bool = False,
 ) -> dict[str, bool]:
     """Disabled flags for this paint.
 
@@ -80,7 +85,7 @@ def held_buttons(
         "next": controls_off,
         "repeat": repeat_off,
         "shuffle": shuffle_off,
-        "radio": controls_off,
+        "radio": controls_off or radio_off,
         "volume": controls_off,
         "save": controls_off,
         "info": controls_off,
@@ -217,13 +222,15 @@ class _Face:
 
     def _apply_offs(self, held: bool) -> None:
         shown = self._shown
-        if not isinstance(shown, tuple) or len(shown) < 12:
+        if not isinstance(shown, tuple) or len(shown) < 13:
             self._held = False
             return
-        _, _, _, _, _, pause_off, repeat_off, _, controls_off, _, _, shuffle_off = shown
+        pause_off, repeat_off, controls_off = shown[5], shown[6], shown[8]
+        shuffle_off, radio_off = shown[11], shown[12]
         for name, off in held_buttons(
             held=held, pause_off=bool(pause_off), repeat_off=bool(repeat_off),
             controls_off=bool(controls_off), shuffle_off=bool(shuffle_off),
+            radio_off=bool(radio_off),
         ).items():
             getattr(self, name).disabled = off
         self._held = held
@@ -240,7 +247,7 @@ class _Face:
     def paint(self, *, move_bar: bool = True) -> bool:
         state = self._current() or now_playing(self.guild)
         shown = self._parts(state)
-        heading, song, status, _, pause_style, _, _, repeat_style, _, shuffle_style, radio_style, _ = shown
+        heading, song, status, _, pause_style, _, _, repeat_style, _, shuffle_style, radio_style, _, _ = shown
         playing = state is not None and state.has_track
         paused = pause_style == discord.ButtonStyle.primary
         # Drop a picture this paint will not send. The tick, a seek, and a new song cut the next frame.
@@ -278,12 +285,14 @@ class _Face:
         elif kind == "next":
             title, author, uri, artwork = _details(getattr(value, "track", value), title, author, uri, artwork)
         self._cover = artwork
-        # A livestream cannot start repeat. Leave it on when repeat is already on.
+        # A livestream cannot start repeat. A station cannot start Last.fm radio.
+        # Leave each on when it is already on, so it can still be turned off.
         stuck = (state.stream or state.length <= 0) and not repeating
         return _face(
             "", song_line(title, author, uri), _status(state, repeating=repeating, shuffling=shuffling, radio_on=radio),
             pause=_lit(paused), pause_off=False, repeat_off=stuck, repeat=_lit(repeating), controls_off=False,
             shuffle=_lit(shuffling), radio=_lit(radio), shuffle_off=radio,
+            radio_off=state.stream and not radio,
         )
 
     def _mount(self, state: PlayState | None, playing: bool) -> None:

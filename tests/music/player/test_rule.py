@@ -32,6 +32,8 @@ def test_a_press_and_a_new_song_each_have_one_answer():
     assert mode_press("shuffle", False, False, False, live=False, stuck=False) == ("shuffle", True)
     assert mode_press("radio", False, False, False, live=False, stuck=False) is None
     assert mode_press("radio", False, False, False, live=True, stuck=False) == ("radio", True)
+    assert mode_press("radio", False, False, False, live=True, stuck=True, station=True) is None
+    assert mode_press("radio", False, False, True, live=True, stuck=True, station=True) == ("radio", False)
     assert mode_press("volume", False, False, False, live=True, stuck=False) is None
 
     assert track_ending(

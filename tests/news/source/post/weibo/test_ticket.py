@@ -75,8 +75,23 @@ async def test_ticket_drafts_artists_and_sales():
     case_traditional_name_simplifies_for_search()
     case_the_same_sale_posts_nothing_and_a_second_sale_posts()
     case_prune_keeps_a_followed_artist_and_drops_the_rest()
+    case_blank_title_still_names_the_show()
     case_other_artist_is_skipped()
     await case_a_new_artist_reads_the_past_week_once()
+    await case_blocked_damai_post_is_not_sent()
+
+def case_blank_title_still_names_the_show():
+    named = _draft({**TWO_SHOWS, "title": ""})
+    assert named is not None and named.title == "周杰伦 | 亚洲巡演两站。"
+    assert _draft({**TWO_SHOWS, "title": None}).title == named.title
+    body = _draft({**TWO_SHOWS, "title": "", "about": ""})
+    assert body is not None and body.title == " ".join(POST.split())
+    brief = "Title: (none)\nAccount: 大麦\nText: 周深 9月1日 上海 开票\nTags: 演出"
+    from_brief = _draft(
+        {"title": "", "shows": [{"performer": "", "date": "9月1日", "place": "上海"}]}, brief,
+    )
+    assert from_brief is not None and from_brief.title == "周深 9月1日 上海 开票"
+    assert _draft({**TWO_SHOWS, "title": ["周杰伦"]}) is None
 
 def case_plan_keeps_both_places():
     draft = _draft(TWO_SHOWS)
@@ -564,6 +579,33 @@ async def case_a_new_artist_reads_the_past_week_once():
         lock=lock, ai_on=True, stored=feed.stored_shows, send=send,
     )
     assert (posted, done, sent) == (0, True, [1])
+
+
+async def case_blocked_damai_post_is_not_sent():
+    watch = DamaiWatch()
+    watch._watched = [WATCH]
+    watch._replay = True
+    blocked = _sale("5366202181878099", timedelta(days=1))
+    real = _sale("real-sale", timedelta(hours=1))
+    feed = ScriptedFetcher(new=[real], loaded=[blocked, real])
+    sent: list[int] = []
+
+    async def send(guild_id, _embed, _files):
+        sent.append(guild_id)
+        return True
+
+    ai = ScriptedAI(replies=[
+        '{"type":"show","facts":[]}',
+        json.dumps({"title": "周杰伦 | 演唱会", "shows": [
+            {"performer": "周杰伦", "date": "9月20日", "place": "K-Arena"},
+        ]}, ensure_ascii=False),
+    ])
+    posted, done = await watch.post(
+        feed, ai=ai, filter_cache=AiCache(), write_cache=AiCache(),
+        lock=asyncio.Lock(), ai_on=True, stored=feed.stored_shows, send=send,
+    )
+    assert (posted, done, sent, len(ai.calls), watch._replay) == (1, True, [1], 2, False)
+    assert feed.seen_calls[0] == ("weibo", DAMAI_WEIBO, ["5366202181878099"])
 
 
 def case_other_artist_is_skipped():

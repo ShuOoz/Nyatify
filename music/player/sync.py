@@ -131,6 +131,9 @@ class _Preview:
         shown = list(self._shown)
         shown[2] = write(str(shown[2]))
         shown[7], shown[9], shown[10], shown[11] = *styles, radio
+        # Nothing is on, so a station is not holding the Last.fm button.
+        if len(shown) > 12:
+            shown[12] = False
         self._shown = tuple(shown)
 
     def _preview(self, kind: str) -> tuple[str, object] | None:
@@ -170,7 +173,8 @@ class _Preview:
         track = None if line is None or line.current is None else line.current.track
         if not live and track is not None and (_on_air(line, track) or not _movable(track)):
             stuck = True
-        return mode_press(kind, repeating, shuffling, radio, live=live, stuck=stuck)
+        station = state is not None and state.stream
+        return mode_press(kind, repeating, shuffling, radio, live=live, stuck=stuck, station=station)
 
     def _can_post(self) -> bool:
         """The card is already in the channel, so the next song can be its own message."""

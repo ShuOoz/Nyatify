@@ -253,26 +253,41 @@ def _fact(label: str, value: str, han: bool) -> str:
     return f"{label}：{value}" if han else f"{label}: {value}"
 
 
+def _ticket_title(given: str, shows: Sequence[TicketShow], about: str, post: str) -> str:
+    """Model title, else performer | event, else a short bit of the post body."""
+    title = " ".join(given.split())
+    performer = next((show.performer for show in shows if show.performer), "")
+    event = " ".join(about.split())
+    if not title and performer and event:
+        title = f"{performer} | {event}"
+    if not title:
+        if post.startswith("Title:"):
+            parts = post.split("\nText:", 1)
+            post = "" if len(parts) == 1 else parts[1].split("\nTags:", 1)[0]
+        title = post
+    return excerpt(title, TITLE_CHARS)
+
+
 def parse_ticket_draft(text: str, post: str) -> TicketDraft | None:
     from news.drafts import _json_object
 
     data = _json_object(text)
-    if data is None or not isinstance(data.get("title"), str):
-        return None
-    title = excerpt(" ".join(data["title"].split()), TITLE_CHARS)
-    if not title:
-        return None
-    raw_shows = data.get("shows")
-    if not isinstance(raw_shows, list):
+    raw_shows = data.get("shows") if data else None
+    given = data.get("title") if data else None
+    if not isinstance(raw_shows, list) or (given is not None and not isinstance(given, str)):
         return None
     haystack = " ".join(post.split())
     window = _one_line(data.get("window"))
     shows = [show for entry in raw_shows if (show := _parse_show(entry, haystack, window))]
     if not shows:
         return None
+    about = _prose(data.get("about"))
+    title = _ticket_title(given or "", shows, about, post)
+    if not title:
+        return None
     return TicketDraft(
         title=title,
-        about=_prose(data.get("about")),
+        about=about,
         window=window,
         shows=tuple(shows),
         price=_one_line(data.get("price")),
@@ -302,6 +317,8 @@ def _parse_show(entry: Any, haystack: str, window: str) -> TicketShow | None:
 
 
 DAMAI_WEIBO = "1722647874"
+# 18 Nov 2026. Wrong 大麦 post: bookmark it, never send it.
+BLOCKED_TICKET_IDS = frozenset({"5366202181878099"})
 StoredShows = Callable[[str, str, str], set[str]]
 
 
@@ -515,9 +532,11 @@ class DamaiWatch:
 
         posted = 0
         retry = False
-        posts = list(got.new)
-        if replay:
-            posts.extend(_recent_missed(got, posts))
+        picked = (*got.new, *(_recent_missed(got, got.new) if replay else ()))
+        posts = [item for item in picked if item.item_id not in BLOCKED_TICKET_IDS]
+        blocked = [item.item_id for item in got.items if item.item_id in BLOCKED_TICKET_IDS]
+        if blocked:
+            fetcher.mark_seen("weibo", DAMAI_WEIBO, blocked)
         for item in posts:
             fields = await card_fields(
                 ai, filter_cache, write_cache, lock, item, FEATURE_TICKET, ai_on_poll=ai_on

@@ -21,6 +21,8 @@ _CARD = 64
 _LINE = 58
 # Artist beside the cover. The picture is a little wider than a side button.
 _COVER = _LINE - 4
+# Heading beside that picture. Larger type holds less than the artist line.
+_HEAD = _COVER * 5 // 6
 # Small type beside a side button holds more than the title, so the note is wider.
 _NOTE = _LINE * 4 // 3
 # That line on the queue, where no side button takes the end.
@@ -119,9 +121,12 @@ def song_label(title: str, author: str) -> str:
     return f"{name} - {artist}" if artist else name
 
 def song_line(title: str, author: str, uri: str | None) -> str:
-    """Title as a heading, linked for a normal web address. The artist sits under it, a little shorter."""
+    """Title as a heading, linked for a normal web address. The artist sits under it.
+
+    The heading is larger than the artist line, so the title is cut shorter.
+    """
     name, artist = _shown(title, author)
-    head = f"### {_link(_clip(name), uri)}"
+    head = f"### {_head_link(_clip(name, _HEAD), uri)}"
     return f"{head}\n{_clip(artist, _COVER)}" if artist else head
 
 def song_row(
@@ -175,6 +180,12 @@ def _link(label: str, uri: str | None) -> str:
         return label
     safe = label.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
     return f"[{safe}]({uri})"
+
+def _head_link(label: str, uri: str | None) -> str:
+    """A heading link. An emoji makes Discord print the address instead of the name."""
+    if any(_half(char) >= 6 for char in label):
+        return label
+    return _link(label, uri)
 
 async def _quiet(call: Callable[..., Awaitable[object]], warning: str, /, **kwargs) -> None:
     try:

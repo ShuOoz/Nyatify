@@ -131,13 +131,15 @@ def _load_song(raw: object) -> _Song | None:
         return None
     listed = raw.get("videos", raw.get("lives"))
     platform = raw.get("platform") if isinstance(raw.get("platform"), str) else "youtube"
-    return _Song(
+    song = _Song(
         _Kept(title, _text(raw.get("author")), url or None, _http(raw.get("artwork")),
               _number(raw.get("length")) or 0, raw.get("stream") is True),
         _number(raw.get("requester_id")), source.normalize_platform(platform),
         videos=tuple(item for item in listed if isinstance(item, str)) if isinstance(listed, list) else (),
         video_at=_number(raw.get("video_at", raw.get("live_at"))) or 0, station=_text(raw.get("station")),
     )
+    _note_station(song)
+    return song
 
 def _adopt_previous(path: Path, previous_name: str) -> None:
     """Move an older session file onto `path` once. An existing `path` stays."""
@@ -230,6 +232,29 @@ def _session_key(key: object) -> int | None:
     except (TypeError, ValueError):
         return None
     return archive._positive(number)
+
+def _station_of(url: str) -> tuple[str, int, tuple[str, ...]] | None:
+    """The menu station this video belongs to: key, place in the list, and the list.
+
+    YouTube can spell one video as more than one address. The id is what matches.
+    """
+    video, _list_id = source._youtube(url)
+    if not video:
+        return None
+    for _label, key, ids in source._STATIONS:
+        if video not in ids:
+            continue
+        return key, ids.index(video), source.station_videos(key)
+    return None
+
+def _note_station(song: object | None) -> None:
+    """A menu-radio video keeps its station list when the save forgot it."""
+    if song is None or song.videos:
+        return
+    found = _station_of(_http(getattr(song.track, "uri", None)) or "")
+    if found is None:
+        return
+    song.station, song.video_at, song.videos = found
 
 # remember imports the readers above before now_playing exists.
 

@@ -54,7 +54,7 @@ async def test_a_name_lists_songs_until_one_is_added(monkeypatch):
     case_an_unplayable_song_greys_the_add_button()
     first = _named("One Wish", "Ray J")
     first.length = 248_000
-    second = _named("x" * 90, "Band")
+    second = _named("x" * 90, "Official HIGE DANdism")
     second.length = 65_000
     started = AsyncMock()
     view = MatchList("one wish", "apple", [first, second], started, 9)
@@ -84,7 +84,7 @@ async def test_a_name_lists_songs_until_one_is_added(monkeypatch):
     assert sections[0].children[0].content == song_row(1, "One Wish", "Ray J", 248_000)
     assert sections[0].accessory.label == MARK_ADD
     assert sections[1].children[0].content.split("\n", 1)[0].endswith("…")
-    assert sections[1].children[0].content.endswith("Band • 1:05")
+    assert sections[1].children[0].content.endswith("Official HIGE… • 1:05")
     assert _page_text(view).startswith(page_line(1, 1, 2))
     assert [button.label for button in rows[-1].children] == [
         MARK_BACK, MARK_NEXT, LABEL_PLAYER, LABEL_QUEUE, MARK_CLOSE,

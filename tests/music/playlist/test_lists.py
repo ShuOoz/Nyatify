@@ -465,6 +465,7 @@ async def test_importing_a_playlist(monkeypatch, tmp_path):
     monkeypatch.setattr(lists, "SONG_LIMIT", 4)
     for index, case in enumerate((
         case_a_playlist_link_imports_the_name_and_the_first_songs,
+        case_a_netease_playlist_keeps_every_song,
         case_create_imports_an_album_a_watch_list_and_a_short_link,
         case_import_skips_duplicate_links_names_a_blank_list_and_counts_the_rest,
         case_an_imported_list_reads_a_missing_artist,
@@ -493,7 +494,11 @@ async def case_a_playlist_link_imports_the_name_and_the_first_songs(monkeypatch,
         blank.uri = None
         return Found(query, key, [blank, *tracks], True, f"  {key} nights ")
 
+    async def unread(_url, *, limit):
+        return None
+
     monkeypatch.setattr("music.playlist.lists.find_songs", found)
+    monkeypatch.setattr("music.playlist.lists.netease_songs", unread)
     store = GuildConfig(tmp_path / "guild.json")
     guild = MagicMock()
     guild.id = 15
@@ -555,6 +560,47 @@ async def case_a_playlist_link_imports_the_name_and_the_first_songs(monkeypatch,
         *links[:-1],
         "https://music.163.com/playlist?id=1",
     ]
+
+async def case_a_netease_playlist_keeps_every_song(monkeypatch, tmp_path):
+    """The detail page is one page. trackIds is the whole list, each song under its own link."""
+    async def found(_guild, query, platform="youtube", mode=None):
+        track = MagicMock()
+        track.title = "Page"
+        track.uri = "https://music.163.com/playlist?id=18406758874"
+        track.source = "netease"
+        track.identifier = "1000"
+        track.author = "A"
+        track.length = 1_000
+        track.raw_data = {}
+        return Found(query, "netease", [track], True, "Partial")
+
+    async def songs(url, *, limit):
+        assert url == "https://music.163.com/playlist?id=18406758874"
+        assert limit == shelf.SONG_LIMIT
+        rows = [("甲乙丙丁", f"https://music.163.com/song?id={index}", "山本康康", 207_933) for index in range(limit)]
+        return "司凤音乐", rows, 2
+
+    monkeypatch.setattr("music.playlist.lists.find_songs", found)
+    monkeypatch.setattr("music.playlist.lists.netease_songs", songs)
+    store = GuildConfig(tmp_path / "guild.json")
+    guild = MagicMock()
+    guild.id = 15
+    view = PlaylistCard(guild, store)
+    press = _press()
+    press.user.id = 4
+    await _button(view, PLAYLISTS).callback(press)
+    await _button(view, LABEL_NEW_LIST).callback(press)
+    modal = press.response.send_modal.await_args.args[0]
+    modal.query.component._value = "https://music.163.com/#/playlist?id=18406758874"
+    sent = _press()
+    sent.user.id = 4
+    await modal.on_submit(sent)
+    assert f"Saved {shelf.SONG_LIMIT} songs. 2 did not fit" in sent.send.await_args.args[0]
+    saved = find_playlist(store, guild.id, "司凤音乐")
+    assert [song.url for song in saved.songs] == [
+        f"https://music.163.com/song?id={index}" for index in range(shelf.SONG_LIMIT)
+    ]
+    assert saved.songs[0].author == "山本康康"
 
 async def case_create_imports_an_album_a_watch_list_and_a_short_link(monkeypatch, tmp_path):
     calls = []

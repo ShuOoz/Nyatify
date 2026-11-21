@@ -17,7 +17,7 @@ from music.lavalink import (
 from music.playback.arrange import _keep_current, _keep_earlier
 from music.playback.remember import (
     QUEUE_SONGS, _CHANGED, _Line, _Song, _drop, _end_saved, _fill_held, _forget, _guild_id, _hold, _line,
-    _occupied_channel, _order_add, _place, _pull, _recall, _remember_id, _saved_generation, _seen_channel,
+    _note_station, _occupied_channel, _order_add, _place, _pull, _recall, _remember_id, _saved_generation, _seen_channel,
     _spread, _store, _stored, _title, _voice_player, _number, forget_bot, note_bot_in, paint_soon,
     save_and_clear,
 )
@@ -468,6 +468,7 @@ async def _begin(player, guild, song, *, failed=None, at=0, replaced=False):
         for name, value in kept.items():
             setattr(line, name, value)
     if line is not None:
+        _note_station(song)
         line.current, line.resting, line.paused, line.position = song, False, False, 0
         line.repeat = repeat_after_replacement(line.repeat, replaced=replaced)
         if line.volume != 100:

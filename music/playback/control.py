@@ -17,7 +17,7 @@ from music.playback.prepare import (
 from music.playback.arrange import _claim_current, _keep_earlier
 from music.playback.remember import (
     QUEUE_SONGS, _Line, _Song, _clear_track, _fill_held, _guild_id, _hold,
-    _movable, _on_air, _order_drop, _place, _promote_waiting, _recall,
+    _movable, _note_station, _on_air, _order_drop, _place, _promote_waiting, _recall,
     _remember_id, _seen_channel, _store, _stored, _text, _unshuffle, _voice_player,
     _number, bot_connected, paint_soon,
 )
@@ -34,6 +34,7 @@ _OPENING_MS = 1_500
 _CHANGE = "Something went wrong while changing the song."
 _QUIET = "Nothing is playing."
 _KEY = "You need a Last.fm key to do this."
+_STATION = "A station cannot start radio."
 _STUCK = "That song cannot move."
 _JOIN = "Join a voice channel first."
 _VOLUME = "Something went wrong while changing the volume."
@@ -386,6 +387,12 @@ async def toggle_radio(guild: object | None, member: object | None = None) -> st
         found = await _ready(guild, member, playing=True)
         if isinstance(found, str): return found
         player, line = found
+        # No player means the saved song changes in place. A station still cannot start radio.
+        track = None if player is None else getattr(player, "current", None)
+        if track is None and line.current is not None:
+            track = line.current.track
+        if not line.radio and track is not None and _on_air(line, track):
+            return _STATION
         if not saved_key(): return _KEY
         note = await _commit_mode(guild, player, line, "radio", place=False)
         if line.radio: await _arm_next(guild, line)
@@ -501,6 +508,7 @@ async def advance_from_end(payload: object) -> None:
 async def _follow_end(player, guild, reason):
     line = _stored(guild)
     song = None if line is None else line.current
+    _note_station(song)
     short = (_number(getattr(player, "_last_position", None)) or 0) < _SHORT_DROP_MS
     choice = "advance" if song is None else track_ending(
         reason=reason, repeating=line.repeat, videos=bool(song.videos),

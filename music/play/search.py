@@ -201,6 +201,7 @@ class MatchList(_SearchCard):
                             _plain(getattr(track, "title", None), "Unknown"),
                             _plain(getattr(track, "author", None)),
                             _ms(track),
+                            fit=True,
                         ),
                         id=40 + offset,
                     ),

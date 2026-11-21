@@ -16,7 +16,6 @@ from music.panel import (
     MARK_LIST,
     MARK_NEXT,
     MARK_SEARCH,
-    RADIO_MARK,
     song_row,
 )
 from music.playlist.card import (
@@ -80,9 +79,15 @@ def case_the_queue_names_who_asked_and_what_is_waiting():
     long_name = Queued("Song", "apple", "https://example.com/a", True, False, "雨" * 30, 182_000, 4)
     assert now_text(long_name).endswith("… · 3:02 · Apple Music")
     radio = Queued("Live", "youtube", None, True, True, "", 0, None)
-    assert now_text(radio).endswith(RADIO_MARK)
+    assert now_text(radio).endswith("\nRadio")
+    assert "-# Radio" not in now_text(radio)
     assert "0:00" not in now_text(radio)
     assert "YouTube" not in now_text(radio)
+    station = Queued("Sweet Dreams Lofi", "youtube", None, False, True, "Lofi Girl", 28_800_000, None)
+    shown = queue_row(1, station)
+    assert shown.count("\n") == 1
+    assert shown.endswith("Lofi Girl · 8:00:00 · Radio")
+    assert "YouTube" not in shown
     waiting = Queued("First", "apple", None, False, False, "Mac", 182_000, 4)
     assert queue_row(1, waiting) == song_row(
         1, "First", "Mac", 182_000, "Apple Music", sep=" · ",

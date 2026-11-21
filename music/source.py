@@ -103,11 +103,9 @@ def _open(url):
 
 def _query_value(query: str, key: str) -> str:
     return next((value.strip() for name, value in parse_qsl(query) if name == key and value.strip()), "")
-
 def _client():
     import aiohttp
     return aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8))
-
 def _text(value: object) -> str:
     return " ".join(value.split()) if isinstance(value, str) else ""
 
@@ -212,16 +210,12 @@ def station_videos(key: str) -> tuple[str, ...]:
 def normalize_platform(name: str | None) -> str:
     key = (name or "").strip().lower()
     return key if key in _PLATFORMS else "youtube"
-
 def platform_key(query: str, platform: str = "youtube") -> str:
     return _open(query)[3] or normalize_platform(platform)
-
 def platform_label(query: str, platform: str = "youtube") -> str:
     return _PLATFORMS[platform_key(query, platform)][0]
-
 def platform_pairs() -> tuple[tuple[str, str], ...]:
     return tuple((key, label) for key, (label, _prefix) in _PLATFORMS.items())
-
 def platform_line(*, last: str = "and") -> str:
     labels = [label for label, _prefix in _PLATFORMS.values()]
     return f"{', '.join(labels[:-1])}, {last} {labels[-1]}"
@@ -273,7 +267,6 @@ def import_link(query: str) -> str | None:
 
 def same_url(left: str, right: str) -> bool:
     return canonical_url(left) == canonical_url(right)
-
 def different_track(left: str, right: str) -> bool:
     one, two = _open(left)[3], _open(right)[3]
     return bool(one and one == two and not same_url(left, right))
@@ -370,17 +363,18 @@ async def heard_title(url: str) -> str:
         return f"{title} {author}"
     return title
 
-async def _oembed(endpoint: str, url: str) -> dict:
+async def _json(url: str, **kwargs) -> dict:
     try:
         async with _client() as session:
-            async with session.get(endpoint, params={"url": url, "format": "json"}) as response:
-                if response.status != 200:
-                    return {}
-                body = await response.json(content_type=None)
+            async with session.get(url, **kwargs) as response:
+                body = await response.json(content_type=None) if response.status == 200 else {}
                 return body if isinstance(body, dict) else {}
     except Exception:
         log.warning("music link had no title", exc_info=True)
         return {}
+
+async def _oembed(endpoint: str, url: str) -> dict:
+    return await _json(endpoint, params={"url": url, "format": "json"})
 
 def unplayable(track: object) -> bool:
     # Only NetEase uses the preview flag for a song that must stay off the queue.
@@ -436,15 +430,12 @@ def page_album(html: str) -> tuple[str, str] | None:
 
 async def _head(content, limit: int = 256 * 1024) -> bytes:
     # One read is the buffered packet, which ends before Spotify's album tag.
-    parts: list[bytes] = []
-    size = 0
+    parts, size = [], 0
     while size < limit:
         block = await content.read(limit - size)
-        if not block:
-            break
         parts.append(block)
         size += len(block)
-        if b"</head>" in b"".join(parts).lower():
+        if not block or b"</head>" in b"".join(parts).lower():
             break
     return b"".join(parts)
 
@@ -488,6 +479,45 @@ def apple_share(url: str) -> str | None:
 
 def kept_url(url: str) -> str:
     return apple_share(url) or canonical_url(url)
+
+def song_link(track: object) -> str:
+    # NodeLink writes the playlist address on every NetEase row.
+    shared = remembered_share(track)
+    if shared:
+        return shared
+    uri = getattr(track, "uri", None)
+    uri = uri if isinstance(uri, str) else ""
+    ident = _plugin(track).get("neteaseId") or getattr(track, "identifier", None)
+    if isinstance(ident, int) and not isinstance(ident, bool):
+        ident = str(ident)
+    if isinstance(ident, str) and ident.isdigit() and _open(uri)[3] == "netease" and request_mode(uri) != "track":
+        return f"https://music.163.com/song?id={ident}"
+    return uri
+
+async def netease_songs(url: str, *, limit: int) -> tuple[str, list[tuple[str, str, str, int]], int] | None:
+    """Name, songs, and how many did not fit. The detail call only fills the first page."""
+    routed = _netease_route(_open(url)[0])
+    ident, page = _query_value(routed.query, "id"), {"User-Agent": "Mozilla/5.0", "Referer": "https://music.163.com/"}
+    if _open(routed)[3] != "netease" or "playlist" not in _sections(routed) or not ident.isdigit() or limit < 1:
+        return None
+    detail = await _json(f"https://music.163.com/api/v6/playlist/detail?id={ident}", headers=page)
+    playlist = detail.get("playlist") if isinstance(detail.get("playlist"), dict) else {}
+    ids = [song_id for song_id in dict.fromkeys(str(item.get("id") if isinstance(item, dict) else item) for item in playlist.get("trackIds") or []) if song_id.isdigit()]
+    found: dict[str, dict] = {}
+    for start in range(0, min(limit, len(ids)), 100):
+        batch = ids[start:min(start + 100, limit)]
+        body = await _json(f"https://music.163.com/api/song/detail/?id={batch[0]}&ids=[{','.join(batch)}]", headers=page)
+        found.update({str(song.get("id")): song for song in body.get("songs") or [] if isinstance(song, dict)})
+    rows = []
+    for song_id in ids[:limit]:
+        song = found.get(song_id)
+        if not isinstance(song, dict):
+            continue
+        people, length = song.get("artists") or song.get("ar") or [], song.get("duration") or song.get("dt") or 0
+        names = ", ".join(name for person in people if isinstance(person, dict) and (name := _text(person.get("name"))))
+        span = 0 if isinstance(length, bool) or not isinstance(length, int) or length < 1 else length
+        rows.append((_text(song.get("name")) or "Unknown", f"https://music.163.com/song?id={song_id}", names, span))
+    return (_text(playlist.get("name")), rows, max(0, len(ids) - limit)) if rows else None
 
 def remember_share(track: object, url: str) -> None:
     share = apple_share(url)
@@ -536,9 +566,8 @@ def _encoded_album(track: object) -> str | None:
     return None if found is None else f"https://open.spotify.com/album/{found.group(1).decode()}"
 
 def _album(track: object) -> tuple[str, str | None] | None:
-    plugin = _plugin(track)
-    nested = plugin.get("album")
-    album = getattr(track, "album", None)
+    plugin, album = _plugin(track), getattr(track, "album", None)
+    nested, playlist = plugin.get("album"), getattr(track, "playlist", None)
     names = [getattr(album, "name", None), plugin.get("albumName")]
     pages = [getattr(album, "url", None), plugin.get("albumUrl"), plugin.get("albumURI")]
     if isinstance(nested, dict):
@@ -547,22 +576,17 @@ def _album(track: object) -> tuple[str, str | None] | None:
         pages.extend((nested.get("url"), links.get("spotify") if isinstance(links, dict) else None))
     elif isinstance(nested, str):
         names.append(nested)
-    playlist = getattr(track, "playlist", None)
     if str(getattr(playlist, "type", "") or "").casefold() == "album":
         names.append(getattr(playlist, "name", None))
         pages.append(getattr(playlist, "url", None))
-    name = _read(names, _text) or ""
-    url = _read(pages, _album_page)
+    name, url = _read(names, _text) or "", _read(pages, _album_page)
     share = remembered_share(track) or getattr(track, "uri", None)
     linked = apple_album(share) if isinstance(share, str) else None
     if linked:
         name = name or linked[0]
-        if url is None or "?i=" in url:
-            url = linked[1]
+        url = linked[1] if url is None or "?i=" in url else url
     url = url or _encoded_album(track)
-    if not name and url is None:
-        return None
-    return name or "Album", url
+    return (name or "Album", url) if name or url is not None else None
 
 def _spotify_track(track: object) -> str | None:
     for value in (getattr(track, "uri", None), _plugin(track).get("save_uri")):

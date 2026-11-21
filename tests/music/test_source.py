@@ -20,10 +20,12 @@ from music.source import (
     import_link,
     link_words,
     needs_redirect,
+    netease_songs,
     normalize_platform,
     platform_key,
     request_mode,
     search_track,
+    song_link,
     take_tracks,
     track_query,
 )
@@ -426,6 +428,101 @@ async def case_search_uses_the_chosen_platform(monkeypatch):
     link = "https://open.spotify.com/track/abc"
     assert await search_track(link, "youtube") == []
     assert called == {"query": link, "source": None}
+
+def test_a_netease_playlist_row_keeps_its_song():
+    """NodeLink writes the playlist address on every row. The identifier is the song."""
+    from types import SimpleNamespace
+
+    playlist = "https://music.163.com/playlist?id=18406758874"
+    row = SimpleNamespace(
+        source="netease",
+        uri=playlist,
+        identifier="3445682829",
+        raw_data={"pluginInfo": {"neteaseId": "3462459662"}},
+    )
+    assert song_link(row) == "https://music.163.com/song?id=3462459662"
+    song = SimpleNamespace(
+        source="netease",
+        uri="https://music.163.com/song?id=1",
+        identifier="1",
+        raw_data={},
+    )
+    assert song_link(song) == "https://music.163.com/song?id=1"
+    other = SimpleNamespace(
+        source="youtube",
+        uri="https://www.youtube.com/watch?v=abc",
+        identifier="123",
+        raw_data={},
+    )
+    assert song_link(other) == "https://www.youtube.com/watch?v=abc"
+
+
+async def test_a_netease_playlist_lists_every_song(monkeypatch):
+    """playlist/detail fills the first page. trackIds is the whole list."""
+    import aiohttp
+
+    shared = (
+        "https://music.163.com/#/playlist?id=18406758874"
+        "&uct2=U2FsdGVkX1/kCvsEKgqCYORgyyjv4N6/5rM9WPGjPKY="
+    )
+    pages = {
+        "playlist/detail": {
+            "playlist": {
+                "name": "司凤音乐",
+                "tracks": [{"id": 1, "name": "Only the first page"}],
+                "trackIds": [{"id": 30}, {"id": 10}, {"id": 20}, {"id": 10}, {"id": 40}],
+            }
+        },
+        "song/detail": {
+            "songs": [
+                {"id": 20, "name": "Third", "artists": [{"name": "C"}], "duration": 3_000},
+                {"id": 10, "name": "Second", "ar": [{"name": "B"}], "dt": 2_000},
+            ]
+        },
+    }
+    calls = []
+
+    class Response:
+        def __init__(self, body):
+            self.status = 200
+            self._body = body
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def json(self, content_type=None):
+            return self._body
+
+    class Session:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        def get(self, url, **kwargs):
+            calls.append(url)
+            body = pages["playlist/detail"] if "playlist/detail" in url else pages["song/detail"]
+            return Response(body)
+
+    monkeypatch.setattr(aiohttp, "ClientSession", Session)
+    assert await netease_songs(shared, limit=3) == (
+        "司凤音乐",
+        [
+            ("Second", "https://music.163.com/song?id=10", "B", 2_000),
+            ("Third", "https://music.163.com/song?id=20", "C", 3_000),
+        ],
+        1,
+    )
+    assert calls[0].endswith("/api/v6/playlist/detail?id=18406758874")
+    assert calls[1].endswith("/api/song/detail/?id=30&ids=[30,10,20]")
+
 
 async def test_a_silent_link_keeps_its_title(monkeypatch):
     """Apple writes the title in the path. Spotify's page does, once Lavalink has not."""

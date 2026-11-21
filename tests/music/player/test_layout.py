@@ -30,6 +30,10 @@ def case_a_press_holds_the_buttons_and_each_part_has_one_id():
         held=False, pause_off=False, repeat_off=True, shuffle_off=True, controls_off=False,
     )
     assert released["repeat"] is True and released["shuffle"] is True and released["pause"] is False
+    station = held_buttons(
+        held=False, pause_off=False, repeat_off=True, shuffle_off=False, controls_off=False, radio_off=True,
+    )
+    assert station["radio"] is True and station["repeat"] is True and station["shuffle"] is False
     assert released["volume"] is False and released["close"] is False and released["leave"] is False
     idle = held_buttons(
         held=True, pause_off=True, repeat_off=True, shuffle_off=True, controls_off=True,

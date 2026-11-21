@@ -255,13 +255,32 @@ async def similar_artists(artist: str, *, getter: Getter | None = None) -> list[
     """Artists listeners also play. No key, a miss, or a failed call is an empty list."""
     return read_artists(await _load("artist.getsimilar", {"artist": _words(artist)}, getter))
 
+def _asked_name(track) -> tuple[str, str] | None:
+    """The Last.fm name this recording was opened for. The site title can differ."""
+    named = getattr(track, "_radio_name", None)
+    if not isinstance(named, tuple) or len(named) != 2:
+        return None
+    artist, title = named
+    if not isinstance(artist, str) or not isinstance(title, str):
+        return None
+    artist, title = _words(artist), _words(title)
+    if not artist or not title:
+        return None
+    return artist, title
+
 def station_heard(songs) -> set[tuple[str, str]]:
-    """Artist and title pairs already in this station, so the next draw can skip them."""
+    """Artist and title pairs already in this station, so the next draw can skip them.
+
+    The name that was asked for is kept. A different spelling on the site still counts.
+    """
     from music.playback.remember import _text
 
     found: set[tuple[str, str]] = set()
     for song in songs:
         track = getattr(song, "track", None)
+        named = _asked_name(track)
+        if named is not None:
+            found.add((named[0].casefold(), named[1].casefold()))
         pair = radio_seed(
             _text(getattr(track, "title", None)),
             _text(getattr(track, "author", None)),
@@ -403,9 +422,11 @@ def _places(platform: str) -> list[str]:
         return [first]
     return [first, "youtube"]
 
-def _mark(track, platform: str):
+def _mark(track, platform: str, name: tuple[str, str] | None = None):
     try:
         setattr(track, "_found_on", platform)
+        if name is not None:
+            setattr(track, "_radio_name", name)
     except Exception:
         return track
     return track
@@ -440,7 +461,7 @@ async def _search_named(song, title: str, artist: str):
             tracks = source.drop_previews(tracks)
         chosen = _chosen(tracks, title, artist, song.track)
         if chosen is not None:
-            return _mark(chosen, platform)
+            return _mark(chosen, platform, (artist, title))
     return None
 
 def _chosen(tracks, title: str, _artist: str, current) -> object | None:

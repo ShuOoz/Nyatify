@@ -55,7 +55,7 @@ def case_clock_and_song_line():
         "### [Song \\[Official Video\\]](https://example.com/song)\nArtist"
     )
     assert song_line("I Ain't Worried - OneRepublic", "OneRepublic", None) == (
-        "### I Ain't Worried - OneRepu…"
+        "### I Ain't Worried - O…"
     )
     assert song_line("Needed", "Ed", None) == "### Needed\nEd"
     assert song_line("Needed, Ed", "Ed", None) == "### Needed, Ed"
@@ -63,6 +63,13 @@ def case_clock_and_song_line():
     assert song_line("雨" * 40, "Ed", None).split("\n", 1)[0].endswith("…")
     assert song_line("Needed", "雨" * 40, None).split("\n", 1)[1].endswith("…")
     assert song_line("Song", "The Chainsmokers", None) == "### Song\nThe Chainsmokers"
+    lofi = song_line(
+        "lofi hip hop mix 📚 beats to relax/study to",
+        "Lofi Girl",
+        "https://www.youtube.com/watch?v=8b3fqIBrNW0",
+    )
+    assert lofi.split("\n", 1)[0] == "### lofi hip hop mix 📚 b…"
+    assert "youtube.com" not in lofi
     assert song_line("Song", "Red Hot Chili Peppers", None) == "### Song\nRed Hot Chili Peppers"
     assert song_label("Needed", "Ed") == "Needed - Ed"
     assert song_label("Needed, Ed", "Ed") == "Needed, Ed"

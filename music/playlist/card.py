@@ -12,7 +12,7 @@ from announce import ACCENT_COLOR
 from music.archive import PLAYLIST_LIMIT, SONG_LIMIT, SavedList, SavedSong
 from music.panel import (
     MARK_ADD, MARK_BACK, MARK_CLOSE, MARK_LIST, MARK_NEXT, MARK_SAVE, MARK_SEARCH,
-    PAGE, RADIO_MARK, Started,
+    PAGE, Started,
     _Card, _Mark, _Menu, _OPEN, _clip, _fit_detail, _hold_card, _link, _mode, _name_in_title, _row,
     format_clock, queue_is_full, song_row,
 )
@@ -54,6 +54,7 @@ def now_text(
     tail = [part for part in (
         format_clock(row.length) if row.length > 0 else "",
         "" if row.stream else platform_label("", row.platform),
+        "Radio" if row.stream else "",
     ) if part]
     detail = _fit_detail(who, tail, " · ", _OPEN) if who or tail else ""
     # The same words as the player: On Repeat + Radio, On Repeat, On Radio, then On Shuffle.
@@ -63,13 +64,13 @@ def now_text(
     lines = [head, f"**{_link(_clip(title), row.url)}**"]
     if detail:
         lines.append(detail)
-    if row.stream:
-        lines.append(RADIO_MARK)
     return "\n".join(lines)
 
 def queue_row(index: int, row: Queued) -> str:
-    text = song_row(index, row.title, row.author, row.length, platform_label("", row.platform), sep=" · ")
-    return f"{text}\n{RADIO_MARK}" if row.stream else text
+    # A station names Radio on the artist line. The site would push that line over.
+    site = "" if row.stream else platform_label("", row.platform)
+    extra = " · ".join(part for part in (site, "Radio" if row.stream else "") if part)
+    return song_row(index, row.title, row.author, row.length, extra, sep=" · ")
 
 def saved_row(index: int, song: SavedSong, *, site: bool) -> str:
     extra = platform_label("", song.platform) if site else ""
