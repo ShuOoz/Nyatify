@@ -7,14 +7,14 @@
 **一个让你和朋友们更亲近的 Discord 机器人**
 
 <p>
-  <a href="https://www.python.org/downloads/"><img alt="Python 3.11+" src="image/docs_image/badge-python.png" /></a>
-  <a href="https://github.com/Rapptz/discord.py"><img alt="discord.py 2.3+" src="image/docs_image/badge-discord.png" /></a>
-  <a href="https://docs.pytest.org/"><img alt="pytest 测过" src="image/docs_image/badge-pytest.png" /></a>
+  <a href="https://www.python.org/downloads/"><img alt="Python 3.11+" src="image/docs_image/readme/badge_python.png" /></a>
+  <a href="https://github.com/Rapptz/discord.py"><img alt="discord.py 2.3+" src="image/docs_image/readme/badge_discord.png" /></a>
+  <a href="https://docs.pytest.org/"><img alt="pytest 测过" src="image/docs_image/readme/badge_pytest.png" /></a>
 </p>
 
-<a href="https://techforpalestine.org/learn-more"><img alt="Ceasefire Now" src="image/docs_image/badge-ceasefire.png" /></a>
+<a href="https://techforpalestine.org/learn-more"><img alt="Ceasefire Now" src="image/docs_image/readme/badge_ceasefire.png" /></a>
 
-<a href="https://ko-fi.com/shuoy" target="_blank"><img height="48" src="image/docs_image/kofi.png" alt="在 ko-fi.com 请我喝一杯" /></a>
+<a href="https://ko-fi.com/shuoy" target="_blank"><img height="48" src="image/docs_image/readme/kofi.png" alt="在 ko-fi.com 请我喝一杯" /></a>
 
 [English](README.md) | 简体中文
 
@@ -22,11 +22,10 @@
 
 ## ✨ 介绍
 
-Nyatify 是一个 Discord 机器人，会发语音通知，也会推送你关注的动态。
-
-<br>
+Nyatify 是一个 Discord 机器人，会发语音通知，会在语音频道放歌，也会推送你关注的动态。
 
 - 🔊 **语音**：有人加入一个空着的语音频道或舞台频道时，发一条消息。
+- 🎵 **音乐**：在语音频道里放歌。
 - 🏆 **比赛**：关注一支体育俱乐部或电竞战队。
 - 🎫 **游戏、门票和其他**：按话题订阅一个**哔哩哔哩**或**微博**账号。
 
@@ -63,15 +62,11 @@ docker run --rm -e DISCORD_TOKEN=your_bot_token_here nyatify
 
 **3️⃣ 配置 Discord：**
 
-[🎮 在 Discord 开发者门户创建一个机器人。](https://discord.com/developers/applications)
-
-**a.** 到 Bot 页面，启用 Server Members Intent 和 Message Content Intent。
-
-**b.** 在 OAuth2 或 Guild Install 里勾选 `bot` 和 `applications.commands`。
-
-**c.** 机器人权限：Send Messages、Embed Links、Attach Files、Mention Everyone。
-
-**d.** 用开发者门户生成的链接，把机器人邀请进服务器。
+1. [🎮 在 Discord 开发者门户创建一个机器人。](https://discord.com/developers/applications)
+2. 到 Bot 页面，启用 Server Members Intent 和 Message Content Intent。
+3. 在 OAuth2 或 Guild Install 里勾选 `bot` 和 `applications.commands`。
+4. 机器人权限：Send Messages、Embed Links、Attach Files、Mention Everyone、Connect、Speak。
+5. 用开发者门户生成的链接，把机器人邀请进服务器。
 
 **4️⃣ 启动机器人：**
 
@@ -158,14 +153,32 @@ AI_MODEL="deepseek-flash"
 AI_ON_POLL="0"  # 填 1 的话，后台轮询也会跑模型。
 ```
 
+### 🎵 音乐
+
+```bash
+# Lavalink 节点。留空就没法开始放歌。
+# 地址示例：http://127.0.0.1:2333
+LAVALINK_URI="http://127.0.0.1:2333"
+LAVALINK_PASSWORD="YOUR_LAVALINK_PASSWORD"
+
+# NodeLink 是网易云音乐用的节点。留空的话，网易云音乐也会走 Java 节点。
+NODELINK_URI="http://127.0.0.1:2334"
+NODELINK_PASSWORD="YOUR_NODELINK_PASSWORD"
+
+# 可选。电台会向 Last.fm 要一首相近的歌。
+# 留空就继续用当前这首歌的标题去搜。https://www.last.fm/api/account/create
+LASTFM_API_KEY="YOUR_LASTFM_API_KEY"
+```
+
 ## 🧩 Cogs
 
-[语音](docs/voice.CN.md)和[动态](docs/news.CN.md)各自有一页，讲它们怎么工作、有哪些命令。
+[语音](docs/voice.CN.md)、[音乐](docs/music.CN.md)和[动态](docs/news.CN.md)各自有一页，讲它们怎么工作、有哪些命令。
 
 | Cog | 做什么 |
 | --- | --- |
 | 🔐 Admin | 所有者可以用它管理 cog，也可以给每个服务器设置通知频道。 |
 | 🔊 Voice | 有人开始使用语音频道或舞台频道时发出的通知。 |
+| 🎵 Music | 在语音频道里放歌。 |
 | 📰 News | 比赛卡片，还有哔哩哔哩和微博的动态。 |
 
 下面是大家都能用的命令，还有所有者命令。
@@ -195,6 +208,14 @@ AI_ON_POLL="0"  # 填 1 的话，后台轮询也会跑模型。
 - 🤖 **机器人和 AFK**：机器人加入频道不会发出通知，挂机频道里也不会发。
 - ⏱️ **一条通知**：这条消息会在 15 分钟后删掉。加入的人离开频道，或者进入挂机频道时，消息也会删掉。
 
+🎵 **音乐**
+
+- 🎧 **语音**：请先加入一个语音频道。
+- 🔗 **来源**：<u>Apple Music、YouTube、Spotify、SoundCloud 和网易云音乐。</u>
+- 🖥️ **Lavalink**：放歌需要在 `config.txt` 里填好 Lavalink 节点。
+- ⏸️ **空闲**：没有在放歌，或者暂停了五分钟，机器人会离开频道。房间里没人时，它不会因此离开。
+- 📻 **电台**：需要 Last.fm 的 API 密钥。
+
 📰 **动态**
 
 - 🎫 **内容**：<u>只支持哔哩哔哩和微博。</u>
@@ -207,10 +228,12 @@ AI_ON_POLL="0"  # 填 1 的话，后台轮询也会跑模型。
 
 做这个机器人的时候，下面这些人和项目帮了我很多。
 
-[DIYgod](https://github.com/DIYgod), [dataabc](https://github.com/dataabc), [SocialSisterYi](https://github.com/SocialSisterYi), [Nemo2011](https://github.com/Nemo2011)
+[DIYgod](https://github.com/DIYgod), [dataabc](https://github.com/dataabc), [SocialSisterYi](https://github.com/SocialSisterYi), [Nemo2011](https://github.com/Nemo2011), [appujet](https://github.com/appujet), [AjieDev](https://github.com/AjieDev)
 
 - [RSSHub](https://github.com/DIYgod/RSSHub)：给很多网站做了订阅源，也包括哔哩哔哩和微博。
 - [weibo-crawler](https://github.com/dataabc/weibo-crawler)：用 Python 写的微博爬虫。
+- [LavaMusic](https://github.com/appujet/lavamusic)：用 Lavalink 做的 Discord 音乐机器人。
+- [Free-Lavalink](https://github.com/AjieDev/Free-Lavalink)：公开的 Lavalink 节点。
 
 🙇‍♂️🙇‍♂️🙇‍♂️ 非常感谢 [Cursor](https://cursor.com) 🙇‍♂️🙇‍♂️🙇‍♂️
 

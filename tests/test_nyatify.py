@@ -44,6 +44,9 @@ def case_intents_follow_selected_cogs():
     voice = bot_intents(["voice"])
     assert voice.voice_states is True
     assert voice.message_content is False
+    music = bot_intents(["music"])
+    assert music.voice_states is True
+    assert music.message_content is False
 
 
 async def case_guild_sync_publishes_to_that_server_and_clears_others(monkeypatch):

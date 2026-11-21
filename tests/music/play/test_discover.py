@@ -1,0 +1,545 @@
+"""The genre card. No Discord login and no Lavalink node."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+
+import discord
+
+from cogs.osa_musify import OsaMusify
+from guild import GuildConfig
+from music.panel import MARK_ANY, MARK_SEARCH, PANEL_SECONDS
+from music.play.discover import EMPTY_SECONDS, GenreList, _kept
+from music.lavalink import Found
+from music.archive import SavedSong, create_playlist
+from music.source import GENRES, RADIOS, station_videos
+
+from tests.music.support import _ask, _defer_marks_done, _named, _person, _scene
+
+async def test_the_empty_card(monkeypatch, tmp_path):
+    """Any picks from the weekly lists. A search that fails leaves the card. A saved playlist is added."""
+    await case_an_idle_genre_card_is_deleted()
+    await _scene(case_the_empty_card_picks_or_stays, monkeypatch=monkeypatch)
+    spot = tmp_path / "saved"
+    spot.mkdir()
+    await _scene(case_the_empty_card_plays_a_saved_playlist, spot, monkeypatch=monkeypatch)
+
+async def case_the_empty_card_picks_or_stays(monkeypatch):
+    """Any picks from the weekly lists. A search that fails leaves the card."""
+    with monkeypatch.context() as patch:
+        await case_the_any_button_picks_a_song_from_the_weekly_lists(patch)
+    with monkeypatch.context() as patch:
+        await case_a_discover_search_that_fails_leaves_the_card(patch)
+
+async def case_a_discover_search_that_fails_leaves_the_card(monkeypatch):
+    monkeypatch.setattr(
+        "cogs.osa_musify.find_songs",
+        AsyncMock(return_value="Lavalink is not connected."),
+    )
+    cog = OsaMusify(MagicMock())
+    message = MagicMock()
+    message.delete = AsyncMock()
+    view = GenreList("spotify", AsyncMock(), cog._search)
+    view.message = message
+    press = _ask()
+    press.response.send_modal = AsyncMock()
+    await view.on_search(press)
+    assert view.timeout == PANEL_SECONDS
+    modal = press.response.send_modal.await_args.args[0]
+    submit = _person(9)
+    submit.response.is_done.return_value = True
+    modal.query.component._value = "ocean"
+    await modal.on_submit(submit)
+    assert view.is_finished() is False
+    assert view.timeout == EMPTY_SECONDS
+    assert "Lavalink is not connected" in submit.send.await_args.args[0]
+    message.delete.assert_not_awaited()
+
+async def case_the_empty_card_plays_a_saved_playlist(monkeypatch, tmp_path):
+    store = GuildConfig(tmp_path / "guild.json")
+    guild = MagicMock()
+    guild.id = 15
+    create_playlist(
+        store,
+        guild.id,
+        "Evening",
+        4,
+        (SavedSong("One", "youtube", "https://example.com/one"),),
+    )
+    create_playlist(store, guild.id, "Night", 4)
+    started = AsyncMock()
+    view = GenreList("spotify", started, guild=guild, store=store)
+    view.to_components()
+    assert view.lists.disabled is False
+    assert view.lists.placeholder == "Pick a playlist"
+    assert [(option.label, option.description, option.default) for option in view.lists.options] == [
+        ("Evening", "1 song", False),
+        ("Night", "0 songs", False),
+    ]
+
+    played = []
+
+    async def play(_member, _guild, songs, *, replace, channel=None):
+        played.append(([song.title for song in songs], replace))
+        return "Playing One."
+
+    monkeypatch.setattr("music.play.discover.play_saved", play)
+
+    press = _ask()
+    press.guild = guild
+    view.lists._values = ["Night"]
+    await view.lists.callback(press)
+    assert "Night has no songs" in press.send.await_args.args[0]
+    started.assert_not_awaited()
+    assert played == []
+
+    press = _ask()
+    press.guild = guild
+    view.lists._values = ["0"]
+    await view.lists.callback(press)
+    assert played == []
+    started.assert_not_awaited()
+
+    press = _ask()
+    _defer_marks_done(press)
+    press.guild = guild
+    view.lists._values = ["Evening"]
+    await view.lists.callback(press)
+    assert played == [(["One"], False)]
+    started.assert_awaited_once()
+    assert press.edit_original_response.await_args.kwargs["view"] is view
+
+    # The menu edit is what lets Discord accept the same choice again.
+    view.lists._values = ["Evening"]
+    again = _ask()
+    _defer_marks_done(again)
+    again.guild = guild
+    await view.lists.callback(again)
+    assert played == [(["One"], False), (["One"], False)]
+    assert again.edit_original_response.await_args.kwargs["view"] is view
+
+    # A song already on stays. The list is added, and the player is not staged over it.
+    from types import SimpleNamespace
+
+    queued = []
+
+    async def add(_member, _guild, songs, *, replace, channel=None):
+        queued.append(([song.title for song in songs], replace))
+        return "Added 2 songs."
+
+    monkeypatch.setattr("music.play.discover.play_saved", add)
+    monkeypatch.setattr("music.play.discover.now_playing", lambda guild: SimpleNamespace(has_track=True))
+    staged = MagicMock()
+    monkeypatch.setattr("music.player.card.stage", staged)
+    started.reset_mock()
+    press = _ask()
+    _defer_marks_done(press)
+    press.guild = guild
+    view.lists._values = ["Evening"]
+    await view.lists.callback(press)
+    assert queued == [(["One"], False)]
+    staged.assert_not_called()
+    assert "Added 2 songs" in press.send.await_args.args[0]
+    assert view.lists.placeholder == "Pick a playlist"
+
+async def test_a_radio_station(monkeypatch):
+    """A station plays a long video, and stops when one video settles."""
+    await _scene(case_a_radio_station_plays_a_long_video, monkeypatch=monkeypatch)
+    await _scene(case_a_radio_station_stops_when_one_video_settles, monkeypatch=monkeypatch)
+
+async def case_a_radio_station_plays_a_long_video(monkeypatch):
+    video = _named("Sweet Dreams")
+    video.is_stream = False
+    video.length = 8 * 60 * 60 * 1000
+    links = station_videos("lofi")
+    assert [len(station_videos(key)) for _, key in RADIOS] == [5, 5, 5, 5, 5]
+    assert all("/watch?v=" in link for link in links)
+    calls = []
+
+    async def search(guild, song, platform="youtube", mode=None):
+        calls.append(song)
+        assert view.timeout == PANEL_SECONDS
+        assert platform == "youtube"
+        if song == links[0]:
+            return "Nothing on YouTube matched that."
+        return Found(song, platform, [video], True)
+
+    monkeypatch.setattr("music.play.discover.find_songs", search)
+    drawn = iter((0, 3, 4))
+    monkeypatch.setattr("music.play.discover.random.randrange", lambda count: next(drawn))
+    queued = AsyncMock(return_value="Playing Sweet Dreams.")
+    monkeypatch.setattr("music.play.discover.queue_tracks", queued)
+    started = AsyncMock()
+    view = GenreList("youtube", started)
+    view.to_components()
+    view.stations._values = ["lofi"]
+    press = _ask()
+    await view.stations.callback(press)
+    assert calls == [links[0], links[1]]
+    queued.assert_awaited_once()
+    assert "Playing Sweet Dreams" in press.send.await_args.args[0]
+    assert queued.await_args.args[2] == [video]
+    assert queued.await_args.args[3] == "youtube"
+    assert queued.await_args.kwargs["videos"] == links
+    assert queued.await_args.kwargs["video_at"] == 1
+    assert queued.await_args.kwargs["station"] == "lofi"
+    started.assert_awaited_once()
+    assert view.timeout == EMPTY_SECONDS
+
+    calls.clear()
+    queued.reset_mock()
+    started.reset_mock()
+    press = _ask()
+    await view.stations.callback(press)
+    assert calls == [links[3]]
+    assert queued.await_args.kwargs["video_at"] == 3
+
+    calls.clear()
+
+    async def quiet(guild, song, platform="youtube", mode=None):
+        calls.append(song)
+        return "Nothing on YouTube matched that."
+
+    monkeypatch.setattr("music.play.discover.find_songs", quiet)
+    queued.reset_mock()
+    started.reset_mock()
+    message = MagicMock()
+    message.delete = AsyncMock()
+    view.message = message
+    press = _ask()
+    await view.stations.callback(press)
+    assert calls == [links[4], *links[:4]]
+    queued.assert_not_awaited()
+    started.assert_not_awaited()
+    message.delete.assert_not_awaited()
+    assert "did not start" in press.send.await_args.args[0]
+
+async def case_a_radio_station_stops_when_one_video_settles(monkeypatch):
+    """A queued station or a room error is final. A dead address can try the next."""
+    links = station_videos("lofi")
+    video = _named("Sweet Dreams")
+
+    async def search(_guild, song, platform="youtube", mode=None):
+        calls.append(song)
+        return Found(song, platform, [video], True)
+
+    calls: list[str] = []
+    monkeypatch.setattr("music.play.discover.find_songs", search)
+    monkeypatch.setattr("music.play.discover.random.randrange", lambda count: 0)
+    queued = AsyncMock(return_value="Added Sweet Dreams.")
+    monkeypatch.setattr("music.play.discover.queue_tracks", queued)
+    started = AsyncMock()
+    view = GenreList("youtube", started)
+    view.stations._values = ["lofi"]
+    press = _ask()
+    await view.stations.callback(press)
+    assert calls == [links[0]]
+    queued.assert_awaited_once()
+    assert queued.await_args.kwargs["station"] == "lofi"
+    press.send.assert_not_awaited()
+    started.assert_awaited_once()
+
+    calls.clear()
+    queued.reset_mock()
+    started.reset_mock()
+    queued.return_value = "Join the voice channel first."
+    press = _ask()
+    await view.stations.callback(press)
+    queued.assert_awaited_once()
+    assert calls == [links[0]]
+    assert press.send.await_count == 1
+    assert "voice channel" in press.send.await_args.args[0]
+    started.assert_not_awaited()
+
+    calls.clear()
+    queued.reset_mock()
+    started.reset_mock()
+    queued.side_effect = ["YouTube did not start that song.", "Playing Sweet Dreams."]
+    press = _ask()
+    await view.stations.callback(press)
+    assert calls == [links[0], links[1]]
+    assert queued.await_count == 2
+    started.assert_awaited_once()
+    assert "Playing Sweet Dreams" in press.send.await_args.args[0]
+    assert press.response.edit_message.await_args.kwargs["view"] is view
+
+async def case_the_any_button_picks_a_song_from_the_weekly_lists(monkeypatch):
+    tracks = {url: [_named(label)] for label, url in GENRES}
+    opened = []
+    _kept.clear()
+
+    async def search(guild, song, platform="youtube", mode=None):
+        opened.append(song)
+        assert mode is None
+        return Found(song, "spotify", tracks[song], True)
+
+    monkeypatch.setattr("music.play.discover.find_songs", search)
+    monkeypatch.setattr("music.play.discover.random.choice", lambda options: options[-1])
+    queued = AsyncMock(return_value="Playing Anywhere.")
+    monkeypatch.setattr("music.play.discover.queue_tracks", queued)
+    started = AsyncMock()
+    view = GenreList("spotify", started)
+    press = _ask()
+    await view.any.callback(press)
+    assert "Playing Anywhere" in press.send.await_args.args[0]
+    assert set(opened) == {url for _label, url in GENRES}
+    queued.assert_awaited_once()
+    assert queued.await_args.args[2] == tracks[GENRES[-1][1]]
+    started.assert_awaited_once()
+
+async def test_a_genre(monkeypatch):
+    """A genre does not start out of place, and plays one random match."""
+    await _scene(case_a_genre_does_not_start_out_of_place, monkeypatch=monkeypatch)
+    await _scene(case_a_genre_plays_one_random_match, monkeypatch=monkeypatch)
+
+async def case_a_genre_does_not_start_out_of_place(monkeypatch):
+    """Paused, outside voice, or a start that should hold the card: the genre does not take over."""
+    with monkeypatch.context() as patch:
+        await case_a_genre_while_paused_stays_quiet_and_out(patch)
+    with monkeypatch.context() as patch:
+        await case_genre_and_random_check_voice_before_searching(patch)
+    with monkeypatch.context() as patch:
+        await case_a_genre_start_holds_the_card_open(patch)
+
+async def case_a_genre_while_paused_stays_quiet_and_out(monkeypatch):
+    warmed = MagicMock()
+    monkeypatch.setattr("music.play.discover.paused_away", lambda guild: True)
+    monkeypatch.setattr("music.play.discover.warm_voice", warmed)
+    jazz = dict(GENRES)["Jazz"]
+    _kept.clear()
+    monkeypatch.setattr(
+        "music.play.discover.find_songs",
+        AsyncMock(return_value=Found(jazz, "spotify", [_named("Second")], True)),
+    )
+    monkeypatch.setattr(
+        "music.play.discover.queue_tracks",
+        AsyncMock(return_value="Added Second."),
+    )
+    started = AsyncMock()
+    view = GenreList("spotify", started)
+    press = _ask()
+    button = next(item for item in view.buttons if item.phrase == jazz)
+    await button.callback(press)
+    warmed.assert_not_called()
+    started.assert_awaited_once()
+    press.send.assert_not_awaited()
+
+    from types import SimpleNamespace
+
+    from music.player.card import remember
+
+    started.reset_mock()
+    remember(SimpleNamespace(guild=press.guild, _closed=False, message=object()))
+    held = _ask()
+    await button.callback(held)
+    started.assert_not_awaited()
+    warmed.assert_not_called()
+
+def _outside(press) -> None:
+    press.user.voice = None
+    press.user.id = 9
+    press.guild.get_member.return_value = None
+    press.guild._voice_states = {}
+
+
+async def case_genre_and_random_check_voice_before_searching(monkeypatch):
+    """Someone outside voice hears that before the weekly lists are opened."""
+    search = AsyncMock()
+    monkeypatch.setattr("music.play.discover.find_songs", search)
+    warmed = MagicMock()
+    monkeypatch.setattr("music.play.discover.warm_voice", warmed)
+    started = AsyncMock()
+    view = GenreList("spotify", started)
+    press = _ask()
+    _outside(press)
+    await view.any.callback(press)
+    search.assert_not_awaited()
+    warmed.assert_not_called()
+    started.assert_not_awaited()
+    assert "Join a voice channel first" in press.send.await_args.args[0]
+
+    press = _ask()
+    _outside(press)
+    jazz = dict(GENRES)["Jazz"]
+    button = next(item for item in view.buttons if item.phrase == jazz)
+    await button.callback(press)
+    search.assert_not_awaited()
+    warmed.assert_not_called()
+    started.assert_not_awaited()
+    assert "Join a voice channel first" in press.send.await_args.args[0]
+
+
+async def case_a_genre_plays_one_random_match(monkeypatch):
+    tracks = [_named("First"), _named("Second")]
+    jazz = dict(GENRES)["Jazz"]
+    _kept.clear()
+
+    async def search(guild, song, platform="youtube", mode=None):
+        assert song == jazz
+        assert mode is None
+        return Found(song, "spotify", tracks, True)
+
+    monkeypatch.setattr("music.play.discover.find_songs", search)
+    queued = AsyncMock(return_value="Playing Second.")
+    monkeypatch.setattr("music.play.discover.queue_tracks", queued)
+    monkeypatch.setattr("music.play.discover.random.choice", lambda options: options[-1])
+    started = AsyncMock()
+    view = GenreList("Spotify", started)
+    view.to_components()
+    assert view.timeout == EMPTY_SECONDS
+    assert view.rows.content == "**Pick a random song**"
+    assert view.any.label == "꩜"
+    assert [button.label for button in view.buttons] == [
+        "Pop", "Jazz", "Rock", "R&B",
+        "Lo-fi", "Classical", "Hip hop", "Electronic", "Ambient",
+    ]
+    assert {button.label: button.phrase for button in view.buttons} == dict(GENRES)
+    parts = view.children[0].children
+    assert isinstance(parts[0], discord.ui.Section)
+    assert parts[0].children[0].content == "## Osaka Play"
+    assert parts[0].accessory.label == MARK_SEARCH
+    assert isinstance(parts[1], discord.ui.Separator)
+    assert parts[1].visible is True
+    assert parts[1].spacing is discord.SeparatorSpacing.small
+    assert isinstance(parts[5], discord.ui.Separator)
+    assert parts[5].visible is False
+    assert parts[5].spacing is discord.SeparatorSpacing.small
+    assert isinstance(parts[6], discord.ui.Separator)
+    assert parts[6].visible is True
+    assert parts[6].spacing is discord.SeparatorSpacing.small
+    assert parts[7].content == "**Pick a radio station**"
+    assert view.stations.placeholder == "Choose"
+    assert [option.label for option in view.stations.options] == [label for label, _ in RADIOS]
+    assert isinstance(parts[9], discord.ui.Separator)
+    assert parts[9].visible is True
+    assert parts[10].content == "**Pick a playlist**"
+    assert view.lists.placeholder == "Pick a playlist"
+    assert view.lists.disabled is True
+    rows = [item for item in view.walk_children() if isinstance(item, discord.ui.ActionRow)]
+    assert [len(row.children) for row in rows] == [5, 5, 1, 1]
+    assert [child.label for child in rows[0].children] == [MARK_ANY, "Pop", "Jazz", "Rock", "R&B"]
+    assert [child.label for child in rows[1].children] == [
+        "Lo-fi", "Classical", "Hip hop", "Electronic", "Ambient",
+    ]
+
+    message = MagicMock()
+    message.delete = AsyncMock()
+    view.message = message
+    press = _ask()
+    button = next(item for item in view.buttons if item.phrase == jazz)
+    await button.callback(press)
+    message.delete.assert_not_awaited()
+    queued.assert_awaited_once()
+    assert queued.await_args.args[2] == [tracks[1]]
+    started.assert_awaited_once()
+    assert "Playing Second" in press.send.await_args.args[0]
+    assert view.timeout == EMPTY_SECONDS
+
+    queued.reset_mock()
+    started.reset_mock()
+    queued.return_value = "Added Second."
+    waiting = GenreList("Spotify", started)
+    waiting.message = message
+    press = _ask()
+    again = next(item for item in waiting.buttons if item.phrase == jazz)
+    await again.callback(press)
+    message.delete.assert_not_awaited()
+    started.assert_awaited_once()
+    assert waiting.is_finished() is False
+    press.send.assert_not_awaited()
+
+    from types import SimpleNamespace
+
+    from music.player.card import remember
+
+    started.reset_mock()
+    remember(SimpleNamespace(guild=press.guild, _closed=False, message=object()))
+    quiet = _ask()
+    await again.callback(quiet)
+    started.assert_not_awaited()
+
+    missed = GenreList("Spotify", started)
+    missed.message = message
+    message.delete.reset_mock()
+    queued.reset_mock()
+    started.reset_mock()
+    queued.return_value = "Join a voice channel first."
+    press = _ask()
+    button = next(item for item in missed.buttons if item.phrase == jazz)
+    await button.callback(press)
+    message.delete.assert_not_awaited()
+    assert missed.is_finished() is False
+    started.assert_not_awaited()
+    assert "Join a voice channel first" in press.send.await_args.args[0]
+
+async def case_a_genre_start_holds_the_card_open(monkeypatch):
+    seen = []
+    _kept.clear()
+
+    async def search(guild, song, platform="youtube", mode=None):
+        seen.append(view.timeout)
+        return Found(song, "spotify", [_named("Anywhere")], False)
+
+    monkeypatch.setattr("music.play.discover.find_songs", search)
+    monkeypatch.setattr("music.play.discover.queue_tracks", AsyncMock(return_value="Playing Anywhere."))
+    view = GenreList("spotify", AsyncMock())
+    assert view.timeout == EMPTY_SECONDS
+    await view.any.callback(_ask())
+    assert seen == [PANEL_SECONDS] * len(GENRES)
+    assert view.timeout == EMPTY_SECONDS
+
+
+async def test_playlist_and_radio_check_voice_before_starting(monkeypatch, tmp_path):
+    """A playlist or a station says to join voice before it opens a player."""
+    store = GuildConfig(tmp_path / "guild.json")
+    guild = MagicMock()
+    guild.id = 4416
+    create_playlist(
+        store, guild.id, "Evening", 4, (SavedSong("One", "youtube", "https://example.com/one"),),
+    )
+    played = AsyncMock(return_value="Playing One.")
+    monkeypatch.setattr("music.play.discover.play_saved", played)
+    search = AsyncMock()
+    monkeypatch.setattr("music.play.discover.find_songs", search)
+    staged = MagicMock()
+    monkeypatch.setattr("music.player.card.stage", staged)
+    started = AsyncMock()
+    view = GenreList("spotify", started, guild=guild, store=store)
+
+    view.lists._values = ["Evening"]
+    press = _ask()
+    _outside(press)
+    press.guild = guild
+    await view.lists.callback(press)
+    played.assert_not_awaited()
+    search.assert_not_awaited()
+    staged.assert_not_called()
+    started.assert_not_awaited()
+    assert "Join a voice channel first" in press.send.await_args.args[0]
+
+    view.stations._values = ["lofi"]
+    press = _ask()
+    _outside(press)
+    press.guild = guild
+    await view.stations.callback(press)
+    search.assert_not_awaited()
+    staged.assert_not_called()
+    started.assert_not_awaited()
+    assert "Join a voice channel first" in press.send.await_args.args[0]
+
+
+async def case_an_idle_genre_card_is_deleted():
+    """The empty card goes on its own. Stopping it leaves the message up."""
+    message = MagicMock()
+    message.delete = AsyncMock()
+    genre = GenreList("spotify", AsyncMock())
+    assert genre.timeout == EMPTY_SECONDS
+    genre.message = message
+    await genre.on_timeout()
+    message.delete.assert_awaited_once()
+
+    kept = GenreList("spotify", AsyncMock())
+    kept.message = message
+    message.delete.reset_mock()
+    kept.stop()
+    message.delete.assert_not_awaited()

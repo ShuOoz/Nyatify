@@ -128,6 +128,15 @@ class Settings:
         self.news_poll = self.news_poll_match or self.news_poll_post
         self.ai_on_poll = _flag(_first(environ, file_values, "AI_ON_POLL"))
 
+        # music plays through this Lavalink node. Empty leaves play unable to start.
+        self.lavalink_uri = text("LAVALINK_URI") or None
+        self.lavalink_password = text("LAVALINK_PASSWORD") or None
+        # NetEase plays through NodeLink. Empty keeps NetEase on the Java node.
+        self.nodelink_uri = text("NODELINK_URI") or None
+        self.nodelink_password = text("NODELINK_PASSWORD") or None
+        # Optional. Radio asks Last.fm for a similar song. Empty keeps the title search.
+        self.lastfm_api_key = text("LASTFM_API_KEY") or None
+
     def require_token(self) -> str:
         if not self.token:
             raise RuntimeError(

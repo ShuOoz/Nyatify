@@ -67,11 +67,45 @@ def fresh_state(base):
     return restore
 
 
+def _clear_play_cache() -> None:
+    """A song opened in one test must not answer the next test's lookup."""
+    import music.lavalink as node
+    import music.player.card as card
+
+    for task in node._opening.values():
+        task.cancel()
+    node._opening.clear()
+    node._opened.clear()
+    card._staged.clear()
+    card._cards.clear()
+    card._open.clear()
+
+
 @pytest.fixture(autouse=True)
 def _fresh_state(tmp_path):
     """Saved exits, phones, sit-outs and guests stay in the test tmp dir."""
+    import music.playback as playback
+    import music.playback.remember as remember
+
     restore = fresh_state(tmp_path)
+    previous = remember.PATH
+    remember.PATH = tmp_path / "music_session.json"
+    remember._book = None
+    remember._cache_path = None
+    playback._lines.clear()
+    playback._heard.clear()
+    playback._missing.clear()
+    playback._requesters.clear()
+    _clear_play_cache()
     yield
+    playback._lines.clear()
+    playback._heard.clear()
+    playback._missing.clear()
+    playback._requesters.clear()
+    _clear_play_cache()
+    remember.PATH = previous
+    remember._book = None
+    remember._cache_path = None
     restore()
 
 
@@ -93,7 +127,7 @@ def fresh(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _no_proxy(monkeypatch):
-    """A proxy in config.txt must not reach test HTTP."""
+    """A proxy or Last.fm key in config.txt must not reach test HTTP."""
     from config import settings as live_settings
 
     monkeypatch.setattr(live_settings, "bili_proxy", None)
@@ -104,6 +138,9 @@ def _no_proxy(monkeypatch):
     monkeypatch.setattr(live_settings, "weibo_proxies", ())
     monkeypatch.setattr(live_settings, "ai_proxy", None)
     monkeypatch.setattr(live_settings, "ip_check", False)
+    monkeypatch.setattr(live_settings, "lastfm_api_key", None)
+    monkeypatch.setattr(live_settings, "nodelink_uri", None)
+    monkeypatch.setattr(live_settings, "nodelink_password", None)
 
 
 @pytest.fixture
