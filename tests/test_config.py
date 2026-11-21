@@ -42,6 +42,8 @@ def case_settings_read_file_env_and_defaults(tmp_path: Path):
     assert blank.weibo_proxy is None
     assert blank.weibo_proxies == ()
     assert blank.ai_proxy is None
+    assert blank.sportsdb_proxies == ()
+    assert blank.sportsdb_proxy_cooldown == 60
     assert blank.ai_api_key is None
     assert blank.lavalink_uri is None
     assert blank.lavalink_password is None
@@ -81,6 +83,21 @@ def case_settings_read_file_env_and_defaults(tmp_path: Path):
     listed_weibo = _settings(tmp_path, "WEIBO_PROXY=http://w0, http://w1, http://w0\n")
     assert listed_weibo.weibo_proxies == ("http://w0", "http://w1")
     assert listed_weibo.weibo_proxy == "http://w0"
+    sports = _settings(
+        tmp_path,
+        "THESPORTSDB_PROXY=http://127.0.0.1:7911, http://127.0.0.1:7914, http://127.0.0.1:7911\n"
+        "THESPORTSDB_PROXY_COOLDOWN=45\n",
+    )
+    assert sports.sportsdb_proxies == ("http://127.0.0.1:7911", "http://127.0.0.1:7914")
+    assert sports.sportsdb_proxy_cooldown == 45
+    env_sports = _settings(
+        tmp_path,
+        "THESPORTSDB_PROXY=http://file:1\n",
+        {"THESPORTSDB_PROXY": "http://env:1, http://env:2"},
+    )
+    assert env_sports.sportsdb_proxies == ("http://env:1", "http://env:2")
+    with pytest.raises(RuntimeError, match="THESPORTSDB_PROXY_COOLDOWN"):
+        _settings(tmp_path, "THESPORTSDB_PROXY_COOLDOWN=0\n")
     assert env_proxy.ai_proxy == "http://file:3"
     env = _settings(
         tmp_path,

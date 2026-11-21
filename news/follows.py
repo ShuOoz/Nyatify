@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from guild import GuildConfig, announce_features
 from news.source.match.thesportsdb.clubs import (
-    club_already_followed, official_club_name, sport_for_club,
+    club_alias, club_already_followed, official_club_name, sport_for_club,
 )
 from news.source.match.pandascore import NAME as PANDASCORE_PLATFORM
 from news.source.match.thesportsdb import NAME as SPORTS_PLATFORM
@@ -91,6 +91,50 @@ def follow_id(follow: Follow) -> tuple[str, str, str]:
     return follow["platform"], follow["account"], follow["topic"]
 
 
+def _club_id(account: str, label: str) -> str:
+    """The label's id when this number is a different known club."""
+    named = club_alias(label)
+    if named is None or not named.team_id.isdigit() or not account.isdigit() or account == named.team_id:
+        return account
+    claimed = club_alias(account)
+    if claimed is None or claimed.name == named.name:
+        return account
+    return named.team_id
+
+
+def _rewrite_club_ids(store: GuildConfig, guild_id: int) -> dict[str, str]:
+    """Save the label's club id. Returns each replaced number and the id kept."""
+    raw = store.guild_list(guild_id, FOLLOWS_KEY)
+    have = {
+        (str(item.get("account") or ""), str(item.get("topic") or ""))
+        for item in raw
+        if isinstance(item, dict) and item.get("platform") == SPORTS_PLATFORM
+    }
+    saved: list[object] = []
+    moved: dict[str, str] = {}
+    changed = False
+    for item in raw:
+        if not isinstance(item, dict) or item.get("platform") != SPORTS_PLATFORM:
+            saved.append(item)
+            continue
+        account = str(item.get("account") or "")
+        label = item.get("label") if isinstance(item.get("label"), str) else ""
+        topic = str(item.get("topic") or "")
+        corrected = _club_id(account, label)
+        if corrected == account:
+            saved.append(item)
+            continue
+        changed = True
+        moved[account] = corrected
+        if (corrected, topic) in have:
+            continue
+        have.add((corrected, topic))
+        saved.append({**item, "account": corrected})
+    if changed:
+        store.set_guild_list(guild_id, FOLLOWS_KEY, saved)
+    return moved
+
+
 def canonical_follow(
     platform: str, account: str, topic: str, label: str | None = None
 ) -> Follow:
@@ -113,6 +157,8 @@ def canonical_follow(
     record: Follow = {"platform": platform_key, "account": account_key, "topic": topic_key}
     if isinstance(label, str) and label.strip():
         record["label"] = label.strip()
+    if platform_key == SPORTS_PLATFORM:
+        record["account"] = _club_id(record["account"], record.get("label") or "")
     return record
 
 
@@ -144,6 +190,7 @@ def list_news_follows(
         wanted = topic if topic in SHOW_TOPICS else normalize_news_topic(topic)
         if wanted is None:
             return []
+    _rewrite_club_ids(store, guild_id)
     found: dict[tuple[str, str, str], Follow] = {}
     for item in store.guild_list(guild_id, FOLLOWS_KEY):
         parsed = _read_follow(item)
@@ -228,9 +275,11 @@ def fill_news_follow(
     team_key = (team_id or "").strip()
     if platform_key == SPORTS_PLATFORM and team_key and not team_key.isdigit():
         team_key = ""
-    rename = bool(team_key) and team_key != account_key
     # An account id is not a label. Renaming a word account keeps that word.
     name = _trim(feed_display_name(label, platform_key) if label is not None else None, 100)
+    if platform_key == SPORTS_PLATFORM:
+        account_key = _rewrite_club_ids(store, guild_id).get(account_key, account_key)
+    rename = bool(team_key) and team_key != account_key
     if name == account_key and not rename:
         name = None
     elif name is None and rename and not account_key.isdigit():
@@ -243,6 +292,17 @@ def fill_news_follow(
         return False
 
     follows = list_news_follows(store, guild_id)
+    if platform_key == SPORTS_PLATFORM and team_key:
+        club_label = name or next(
+            (
+                item.get("label") or ""
+                for item in follows
+                if item["platform"] == platform_key and item["account"] == account_key
+            ),
+            "",
+        )
+        team_key = _club_id(team_key, club_label)
+        rename = bool(team_key) and team_key != account_key
 
     def same(item: Follow, account: str) -> bool:
         return item["platform"] == platform_key and item["account"] == account

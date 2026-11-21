@@ -8,7 +8,7 @@
 
 # 🖼️ 示例
 
-<img src="../image/docs_image/voice-notice.png" alt="语音通知：先是一条提醒，接着是进频道那个人的卡片" width="560" />
+<img src="../image/docs_image/voice/voice_notice.png" alt="语音通知：先是一条提醒，接着是进频道那个人的卡片" width="560" />
 
 # ⌨️ 命令
 

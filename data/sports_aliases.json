@@ -453,7 +453,7 @@
   "Basketball": {
     "76ers": {
       "name": "Philadelphia 76ers",
-      "id": "134113"
+      "id": "134863"
     },
     "aces": {
       "name": "Las Vegas Aces"
@@ -677,15 +677,15 @@
     },
     "philadelphia": {
       "name": "Philadelphia 76ers",
-      "id": "134113"
+      "id": "134863"
     },
     "philadelphia 76ers": {
       "name": "Philadelphia 76ers",
-      "id": "134113"
+      "id": "134863"
     },
     "philly": {
       "name": "Philadelphia 76ers",
-      "id": "134113"
+      "id": "134863"
     },
     "phoenix": {
       "name": "Phoenix Suns"
@@ -725,7 +725,7 @@
     },
     "sixers": {
       "name": "Philadelphia 76ers",
-      "id": "134113"
+      "id": "134863"
     },
     "spurs": {
       "name": "San Antonio Spurs"
@@ -1241,6 +1241,10 @@
     },
     "giallorossi": {
       "name": "AS Roma"
+    },
+    "gil vicente": {
+      "name": "Gil Vicente",
+      "id": "134113"
     },
     "glasgow rangers": {
       "name": "Rangers FC"

@@ -288,34 +288,89 @@ async def resolve_team(
         )
         raise FetchError(f"Name matches more than one team. Use {tokens}")
     alias = aliases[0] if aliases else None
-    lookup = (alias.team_id or alias.name) if alias is not None else account
+    if alias is not None and alias.team_id.isdigit():
+        row = await _lookup_team(client, alias.team_id)
+        if row is None or not _alias_fits(alias, row, strict=True):
+            # The stored id is a different club. Search the official name.
+            row = await _team_by_name(client, alias.name, alias._replace(team_id=""))
+        return row.team_id, alias.name, alias.sport, row.league_id
+    lookup = alias.name if alias is not None else account
     if lookup.isdigit():
-        matches = parse_sportsdb_team_list(
-            await client.json("lookupteam.php", {"id": lookup}, "Team lookup")
-        )
-        if not matches:
+        row = await _lookup_team(client, lookup)
+        if row is None:
             raise FetchError(f"No team {lookup}")
-        row = matches[0]
-        team_id, name, sport, league_id = (
-            row.team_id,
-            row.name,
-            row.sport,
-            row.league_id,
-        )
-    else:
-        hits = {
-            hit.team_id: hit
-            for hit in parse_sportsdb_team_list(
-                await client.json("searchteams.php", {"t": lookup}, "Team search")
-            )
-        }
-        team_id, name = pick_team(list(hits.values()), account)
-        row = hits.get(team_id)
-        sport = row.sport if row is not None else ""
-        league_id = row.league_id if row is not None else ""
-    if alias is not None:
-        name, sport = alias.name, alias.sport
-    return team_id, name, sport, league_id
+        return row.team_id, row.name, row.sport, row.league_id
+    row = await _team_by_name(client, lookup, alias)
+    name, sport = (alias.name, alias.sport) if alias is not None else (row.name, row.sport)
+    return row.team_id, name, sport, row.league_id
+
+
+async def _lookup_team(client: SportsdbClient, team_id: str) -> TeamHit | None:
+    matches = parse_sportsdb_team_list(
+        await client.json("lookupteam.php", {"id": team_id}, "Team lookup")
+    )
+    return matches[0] if matches else None
+
+
+async def _team_by_name(
+    client: SportsdbClient, query: str, alias: ClubAlias | None,
+) -> TeamHit:
+    hits = parse_sportsdb_team_list(
+        await client.json("searchteams.php", {"t": query}, "Team search")
+    )
+    return _matching_team(hits, query, alias)
+
+
+def _matching_team(
+    matches: Sequence[TeamHit], query: str, alias: ClubAlias | None,
+) -> TeamHit:
+    """The club this name means. A stored id that failed the lookup is not a vote."""
+    if alias is None:
+        team_id, _name = pick_team(matches, query)
+        return next(hit for hit in matches if hit.team_id == team_id)
+    fitting = [hit for hit in matches if _alias_fits(alias, hit)]
+    if not fitting:
+        raise FetchError(f"No team named {alias.name}")
+    ranked = sorted(
+        fitting,
+        key=lambda hit: (_team_rank(hit, query, alias), hit.name),
+        reverse=True,
+    )
+    if (
+        len(ranked) > 1
+        and _team_rank(ranked[0], query, alias) == _team_rank(ranked[1], query, alias)
+    ):
+        ids = ", ".join(f"thesportsdb:{hit.team_id}" for hit in ranked[:5])
+        raise FetchError(f"Name matches more than one team. Use {ids}")
+    return ranked[0]
+
+
+def _alias_fits(alias: ClubAlias, hit: TeamHit, *, strict: bool = False) -> bool:
+    """True when this row is the aliased club, not another team that shares its id.
+
+    A stored id has to name that club. A youth or reserve side that only starts
+    with the name does not.
+    """
+    sport = title_sport(hit.sport)
+    if alias.sport and sport and alias.sport != sport:
+        return False
+    want = _query_key(alias.name)
+    if not want:
+        return False
+    prefix = False
+    for label in _club_labels(hit):
+        got = _query_key(label)
+        if got == want:
+            return True
+        prefix = prefix or got.startswith(want + " ")
+    return prefix and not (strict and _is_minor_league(hit))
+
+
+def _club_labels(hit: TeamHit) -> list[str]:
+    labels = [hit.name, hit.short]
+    for blob in (hit.alternate, hit.keywords):
+        labels.extend(part.strip() for part in blob.split(","))
+    return [label for label in labels if label]
 
 
 def _named_club(account: str, label: str = "") -> ClubAlias | None:

@@ -55,7 +55,8 @@ log = logging.getLogger(__name__)
 
 BiliRoster = tuple[tuple[str, ...], tuple[str, ...], int, int]
 ROTATION_PATH = BASE_DIR / "data" / "bili_rotation.json"
-SIT_OUT_PATH = BASE_DIR / "data" / "bili_empty_cap.json"
+SIT_OUT_PATH = BASE_DIR / "data" / "bili_timeout.json"
+_PREVIOUS_SIT_OUT = ("bili_rest.json", "bili_empty_cap.json")
 BLANK_PATH = BASE_DIR / "data" / "bili_blank.json"
 
 # Proxies left out of the rest of this poll. None outside a poll.
@@ -97,6 +98,17 @@ class BlankPlan:
         write_json(self.path, {"accounts": sorted(self._rows or ())})
 
 
+def _adopt_previous(path: Path, previous_name: str) -> None:
+    """Move an older data file onto `path` once. An existing `path` stays."""
+    if path.exists():
+        return
+    previous = path.with_name(previous_name)
+    if previous.is_file():
+        previous.replace(path)
+
+
+for _previous_sit_out in _PREVIOUS_SIT_OUT:
+    _adopt_previous(SIT_OUT_PATH, _previous_sit_out)
 cap = ProxyRest(SIT_OUT_PATH)
 blanks = BlankPlan()
 

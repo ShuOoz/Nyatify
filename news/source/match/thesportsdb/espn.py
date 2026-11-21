@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from fetch import FetchError, GetText, http_url, json_headers, load_json
+from news.source.match.common import goal_list
 
 from .scoreboard import EspnGame, parse_espn_scoreboard, parse_espn_summary
 
@@ -230,7 +231,8 @@ def espn_facts(notes: Sequence[str]) -> str:
     unique = list(dict.fromkeys(line.strip() for line in notes if line and line.strip()))
     if unique and any(mark in unique[0] for mark in _BOX):
         return unique[0]
-    return "\n".join(unique)
+    listed = goal_list("\n".join(unique))
+    return listed if listed is not None else "\n".join(unique)
 
 
 def _fact_parts(facts: str) -> tuple[str, ...]:

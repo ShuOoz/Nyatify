@@ -10,8 +10,10 @@ MATCH_WRITE_PROMPT = (
     f"summary is at most {MATCH_RECAP_CHARS} characters including newlines. "
     + LINE_RULE
     + "Keep title empty. Use only these notes. Do not invent names, minutes, or scores. "
-    "Soccer: keep Home/Away. **Home** then **Away**, heading on its own line, no colon. "
-    "One scorer and minute per line. Empty side is -. Keep both headings. "
+    "Soccer: summary is only the goal list. Drop every other sentence. "
+    "**Home**, then the home scorers, a blank line, then **Away**. "
+    "Heading on its own line, no colon. "
+    "One scorer and minute per line, copied as written. Empty side is -. Keep both headings. "
     "Other sports: copy the period box as-is "
     "(Lakers quarters: 19 23 24 22; Warriors quarters: 21 21 21 29). "
     "No hashtags, no URLs, or extra keys."

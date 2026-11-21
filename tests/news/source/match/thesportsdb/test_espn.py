@@ -283,6 +283,17 @@ def case_facts_keep_a_box_and_join_scorers():
     assert espn_facts([" Raphinha 3' ", "", "Raphinha 3'", "Adeyemi 22'"]) == (
         "Raphinha 3'\nAdeyemi 22'"
     )
+    assert espn_facts([
+        "Barcelona came from behind to beat Atlético 2-1.",
+        "Home",
+        "Giuliano Simeone 10'",
+        "Away",
+        "Fermín López 45'",
+        "Fermín López 66'",
+    ]) == (
+        "**Home**\nGiuliano Simeone 10'\n\n**Away**\n"
+        "Fermín López 45'\nFermín López 66'"
+    )
     assert espn_summary_url("football", "nfl", "401772510").endswith(
         "/football/nfl/summary?event=401772510"
     )

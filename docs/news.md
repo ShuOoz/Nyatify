@@ -8,7 +8,7 @@ Cards go to this server's news announce channel. Set that channel with `/announc
 
 # 🖼️ Example
 
-<img src="../image/docs_image/news-game.png" alt="Game post: a Bilibili card with the account, the notice, and one image" width="560" />
+<img src="../image/docs_image/news/news_game.png" alt="Game post: a Bilibili card with the account, the notice, and one image" width="560" />
 
 # ⌨️ Commands
 

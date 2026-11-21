@@ -8,7 +8,7 @@
 
 # 🖼️ 示例
 
-<img src="../image/docs_image/news-game.png" alt="游戏动态：一张哔哩哔哩卡片，上面是账号、正文和一张图" width="560" />
+<img src="../image/docs_image/news/news_game.png" alt="游戏动态：一张哔哩哔哩卡片，上面是账号、正文和一张图" width="560" />
 
 # ⌨️ 命令
 

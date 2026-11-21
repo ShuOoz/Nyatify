@@ -435,12 +435,15 @@ class BookmarkStore:
         self._data = data
 
 
-async def aiohttp_get(url: str, headers: dict[str, str] | None) -> str:
+async def aiohttp_get(
+    url: str, headers: dict[str, str] | None, proxy: str | None = None,
+) -> str:
     import aiohttp
 
     timeout = aiohttp.ClientTimeout(total=20)
+    extra = {"proxy": proxy} if proxy else {}
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url, headers=headers) as response:
+        async with session.get(url, headers=headers, **extra) as response:
             if response.status >= 400:
                 try:
                     body = await response.text()

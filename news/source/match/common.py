@@ -92,6 +92,28 @@ def parse_iso(value: str) -> datetime | None:
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
+def _list_side(line: str) -> str | None:
+    bare = line.strip().replace("*", "").casefold()
+    return bare if bare in {"home", "away"} else None
+
+
+def goal_list(text: str) -> str | None:
+    """Scorers only, with a blank line between Home and Away. None when this is not that list."""
+    lines = [line.strip() for line in text.replace("\r\n", "\n").split("\n") if line.strip()]
+    home_at = next((i for i, line in enumerate(lines) if _list_side(line) == "home"), None)
+    if home_at is None:
+        return None
+    away_at = next(
+        (i for i, line in enumerate(lines) if i > home_at and _list_side(line) == "away"),
+        None,
+    )
+    if away_at is None:
+        return None
+    home = [line for line in lines[home_at + 1 : away_at] if _list_side(line) is None]
+    away = [line for line in lines[away_at + 1 :] if _list_side(line) is None]
+    return "\n".join(["**Home**", *(home or ["-"]), "", "**Away**", *(away or ["-"])])
+
+
 def match_card_body(
     status: str,
     home: str,
@@ -112,7 +134,7 @@ def match_card_body(
     if live:
         lines.append(f"{MATCH_PHASE_HEADING} | {note}")
     else:
-        lines.extend(["", MATCH_DETAIL_HEADING, note])
+        lines.extend(["", MATCH_DETAIL_HEADING, goal_list(note) or note])
     return "\n".join(lines)
 
 

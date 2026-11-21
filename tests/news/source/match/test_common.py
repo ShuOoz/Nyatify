@@ -95,6 +95,20 @@ def case_card_lines_clocks_and_order():
     bare = match_card_body("Over", "  ", "", "Enjoy the rest of your day.", live=False)
     assert "**Home**" not in bare and "**League**" not in bare
     assert bare.endswith("**Details**\nEnjoy the rest of your day.")
+    goals = match_card_body(
+        "Over",
+        "Inter Miami",
+        "American Major League Soccer",
+        "Barcelona came from behind.\nHome\nIan Fray 14'\nLuis Suárez 33'\nAway\nLiel Abada 50'",
+        live=False,
+    )
+    assert goals.endswith(
+        "**Details**\n**Home**\nIan Fray 14'\nLuis Suárez 33'\n\n**Away**\nLiel Abada 50'"
+    )
+    assert "came from behind" not in goals
+    assert match_card_body("Over", "Arsenal", "Premier League", "Home\nAway\nSaka 12'", live=False).endswith(
+        "**Details**\n**Home**\n-\n\n**Away**\nSaka 12'"
+    )
 
     assert status_key("Status Final") == "final"
     assert status_key("Match_Finished") == "match finished"

@@ -18,6 +18,7 @@ from news.source.match.common import (
     NEXT_TAG,
     SKIP_TAG,
     START_TAG,
+    goal_list,
     is_match_item,
     match_stage,
 )
@@ -99,16 +100,25 @@ def _event_after_account(title: str, account: str) -> str:
     return title.strip()
 
 
-def apply_match_recap(text: str, recap: str) -> str:
-    recap = excerpt(_nl(recap).strip(), MATCH_RECAP_CHARS, breaks=True)
-    raw = _nl(text)
+def _detail_note(raw: str) -> str:
     at = raw.find(MATCH_DETAIL_HEADING)
     if at < 0:
-        return f"{raw}\n{recap}" if recap else raw
+        return ""
+    return raw[at + len(MATCH_DETAIL_HEADING) :].strip()
+
+
+def apply_match_recap(text: str, recap: str) -> str:
+    raw = _nl(text)
+    # The note's scorer list wins. A rewrite cannot put the match story back.
+    chosen = goal_list(_detail_note(raw)) or goal_list(recap) or recap
+    chosen = excerpt(_nl(chosen).strip(), MATCH_RECAP_CHARS, breaks=True)
+    at = raw.find(MATCH_DETAIL_HEADING)
+    if at < 0:
+        return f"{raw}\n{chosen}" if chosen else raw
     start = at + len(MATCH_DETAIL_HEADING)
     if start < len(raw) and raw[start] == "\n":
         start += 1
-    return raw[:start] + recap
+    return raw[:start] + chosen
 
 
 def news_embed(

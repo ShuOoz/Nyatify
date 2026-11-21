@@ -101,7 +101,7 @@ class Settings:
         self.bili_ac_time = text("BILI_AC_TIME") or None
         self.weibo_cookie = text("WEIBO_COOKIES") or None
         # Optional. Bilibili takes a list. Each empty is direct.
-        # Match scores and Discord stay direct.
+        # Discord stays direct. Sports scores use their own list when it is set.
         self.bili_proxies = _proxy_list(_first(environ, file_values, "BILI_PROXY"))
         self.bili_proxy = self.bili_proxies[0] if self.bili_proxies else None
         self.bili_phones_per_proxy = _count(
@@ -118,6 +118,12 @@ class Settings:
         self.ai_proxy = text("AI_PROXY") or None
 
         self.sportsdb_key = text("THESPORTSDB_KEY") or None
+        self.sportsdb_proxies = _proxy_list(_first(environ, file_values, "THESPORTSDB_PROXY"))
+        self.sportsdb_proxy_cooldown = _count(
+            _first(environ, file_values, "THESPORTSDB_PROXY_COOLDOWN"),
+            60,
+            "THESPORTSDB_PROXY_COOLDOWN",
+        )
         self.pandascore_token = text("PANDASCORE_TOKEN") or None
 
         self.ai_api_key = text("AI_API_KEY") or None

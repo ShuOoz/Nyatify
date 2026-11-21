@@ -6,7 +6,7 @@ from news.prompt import LINE_RULE, TITLE_RULE
 
 WRITE_PROMPT = {
     FEATURE_GAME: (
-        "Write a game-news Discord embed from this post. "
+        "Write a game-news Discord card from this post. "
         "JSON only: "
         '{"title":"","time":"","about":"","detail":"","reward":""}. '
         "Say each fact once in the sentences. Keep the post's language. Use only this post. "
@@ -39,7 +39,7 @@ WRITE_PROMPT = {
         "No headings in the JSON, no extra keys."
     ),
     FEATURE_TICKET: (
-        "Write a music-news Discord embed from this post. "
+        "Write a music-news Discord card from this post. "
         "JSON only: "
         '{"title":"","about":"","window":"","where":"",'
         '"shows":[{"performer":"","date":"","place":"","price":""}],"price":""}. '
@@ -67,7 +67,7 @@ WRITE_PROMPT = {
         "No hashtags, no URLs, no extra keys."
     ),
     FEATURE_OTHER: (
-        "Write an other-news Discord embed from this post. "
+        "Write an other-news Discord card from this post. "
         "JSON only: "
         '{"title":"one line","summary":"card body"}. '
         f"summary is at most {EXCERPT_CHARS} characters including newlines. "

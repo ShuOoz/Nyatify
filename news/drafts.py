@@ -17,7 +17,7 @@ from fetch import FetchedItem, excerpt, format_fetched_item
 from news.cards import TITLE_CHARS, _fold_summary, _game_card_body, match_recap_notes
 from news.follows import FEATURE_GAME, FEATURE_TICKET
 from news.prompt import FILTER_PROMPT, MATCH_WRITE_PROMPT, WRITE_PROMPT
-from news.source.match.common import is_match_item
+from news.source.match.common import goal_list, is_match_item
 from news.source.post.weibo.ticket import TicketDraft, parse_ticket_draft
 from news.source.registry import for_model, uses_ai
 
@@ -235,6 +235,9 @@ async def card_fields(
     if is_match_item(item):
         recap = None
         notes = match_recap_notes(item)
+        listed = goal_list(notes) if notes else None
+        if listed is not None:
+            return None, None if listed == notes else listed
         if use_ai and notes:
             written = await _write_post(
                 ai, write_cache, lock, item, topic,

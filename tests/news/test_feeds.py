@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from config import settings
 from fetch import BookmarkStore, FetchError
 from news.drafts import word_fingerprint
 from news.feeds import Fetcher, PullResult, _reopen_edits, _split_items, pull_locked
@@ -454,4 +455,156 @@ async def case_pull_locked_retries_after_a_pause(monkeypatch):
     )
     assert waits == [2, 2]
     assert got.team_id == "1"
+
+
+def _script(outcomes: list):
+    calls: list[str | None] = []
+
+    async def get(_url: str, _headers, proxy: str | None = None) -> str:
+        calls.append(proxy)
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    return calls, get
+
+
+def _exit_fetcher(tmp_path: Path, name: str, proxies, clock, get, **kwargs) -> Fetcher:
+    kwargs.setdefault("sportsdb_proxies", proxies)
+    kwargs.setdefault("sportsdb_cooldown", 60.0)
+    return Fetcher(
+        get_text=get,
+        bookmarks_path=tmp_path / f"{name}.json",
+        monotonic=lambda: clock["t"],
+        **kwargs,
+    )
+
+
+async def _ask(fetcher: Fetcher, mark: str):
+    return await fetcher.sportsdb.json("eventsnext.php", {"id": mark}, "Next")
+
+
+async def test_sportsdb_exits(tmp_path, monkeypatch):
+    await case_an_empty_list_stays_direct(tmp_path)
+    await case_exits_take_turns_and_other_fetches_stay_direct(tmp_path)
+    await case_a_rate_limit_rests_that_exit_then_tries_direct(tmp_path)
+    await case_an_http_error_stops_this_request(tmp_path)
+    await case_a_dead_exit_tries_direct_once(tmp_path)
+    await case_the_fetcher_uses_the_configured_list(tmp_path, monkeypatch)
+    await case_an_exit_is_passed_to_aiohttp(tmp_path, monkeypatch)
+
+
+async def case_an_empty_list_stays_direct(tmp_path):
+    calls, get = _script([OSError("connect")])
+    fetcher = _exit_fetcher(tmp_path, "direct", (), {"t": 0.0}, get)
+    with pytest.raises(FetchError, match="connect"):
+        await _ask(fetcher, "1")
+    assert calls == [None]
+
+
+async def case_exits_take_turns_and_other_fetches_stay_direct(tmp_path):
+    calls, get = _script(["{}", "{}", "{}"])
+    fetcher = _exit_fetcher(tmp_path, "turns", ("http://a", "http://b", "http://c"), {"t": 0.0}, get)
+    await _ask(fetcher, "1")
+    await fetcher._get("https://example.test/post", None)
+    await _ask(fetcher, "2")
+    assert calls == ["http://a", None, "http://b"]
+
+
+async def case_a_rate_limit_rests_that_exit_then_tries_direct(tmp_path):
+    calls, get = _script([
+        FetchError("HTTP 429", status=429),
+        FetchError("HTTP 429", status=429),
+        FetchError("HTTP 429", status=429),
+        "{}",
+        "{}",
+        "{}",
+    ])
+    clock = {"t": 1_000.0}
+    fetcher = _exit_fetcher(tmp_path, "limit", ("http://a", "http://b", "http://c"), clock, get)
+    assert await _ask(fetcher, "1") == {}
+    assert calls == ["http://a", "http://b", "http://c", None]
+    assert await _ask(fetcher, "2") == {}
+    assert calls[-1] is None
+    clock["t"] = 1_060.0
+    assert await _ask(fetcher, "3") == {}
+    assert calls == ["http://a", "http://b", "http://c", None, None, "http://a"]
+
+
+async def case_an_http_error_stops_this_request(tmp_path):
+    shutdown = FetchError(
+        "HTTP 403",
+        status=403,
+        body="Free API temporarily disabled. Please wait.",
+    )
+    calls, get = _script([shutdown, "{}", "{}", "{}"])
+    fetcher = _exit_fetcher(tmp_path, "off", ("http://a", "http://b", "http://c"), {"t": 0.0}, get)
+    with pytest.raises(FetchError, match="403"):
+        await _ask(fetcher, "1")
+    assert calls == ["http://a"]
+    await _ask(fetcher, "2")
+    await _ask(fetcher, "3")
+    await _ask(fetcher, "4")
+    assert calls == ["http://a", "http://b", "http://c", "http://a"]
+
+    failed, plain = _script([FetchError("HTTP 500", status=500)])
+    other = _exit_fetcher(tmp_path, "http", ("http://a", "http://b"), {"t": 0.0}, plain)
+    with pytest.raises(FetchError, match="500"):
+        await _ask(other, "1")
+    assert failed == ["http://a"]
+
+
+async def case_a_dead_exit_tries_direct_once(tmp_path):
+    calls, get = _script([OSError("tls"), "{}", "{}", "{}"])
+    clock = {"t": 1_000.0}
+    fetcher = _exit_fetcher(tmp_path, "dead", ("http://a", "http://b"), clock, get)
+    assert await _ask(fetcher, "1") == {}
+    assert calls == ["http://a", None]
+    await _ask(fetcher, "2")
+    await _ask(fetcher, "3")
+    assert calls == ["http://a", None, "http://b", "http://b"]
+
+    blown, again = _script([OSError("tls"), FetchError("HTTP 500", status=500)])
+    broken = _exit_fetcher(tmp_path, "dead-direct", ("http://a", "http://b"), {"t": 0.0}, again)
+    with pytest.raises(FetchError, match="500"):
+        await _ask(broken, "1")
+    assert blown == ["http://a", None]
+
+
+async def case_the_fetcher_uses_the_configured_list(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "sportsdb_proxies", ("http://a", "http://b"))
+    calls, get = _script(["{}", "{}"])
+    fetcher = Fetcher(
+        get_text=get, bookmarks_path=tmp_path / "configured.json", monotonic=lambda: 0.0,
+    )
+    await _ask(fetcher, "1")
+    await _ask(fetcher, "2")
+    assert calls == ["http://a", "http://b"]
+
+    monkeypatch.setattr(settings, "sportsdb_proxies", ("http://a",))
+    quiet, direct = _script(["{}"])
+    empty = Fetcher(
+        get_text=direct, bookmarks_path=tmp_path / "empty.json",
+        sportsdb_proxies=(), monotonic=lambda: 0.0,
+    )
+    await _ask(empty, "1")
+    assert quiet == [None]
+
+
+async def case_an_exit_is_passed_to_aiohttp(tmp_path, monkeypatch):
+    seen: list[str | None] = []
+
+    async def fake(_url, _headers, proxy: str | None = None) -> str:
+        seen.append(proxy)
+        return "{}"
+
+    monkeypatch.setattr("news.feeds.aiohttp_get", fake)
+    fetcher = Fetcher(
+        bookmarks_path=tmp_path / "aiohttp.json",
+        sportsdb_proxies=("http://127.0.0.1:7911",),
+        monotonic=lambda: 0.0,
+    )
+    assert await _ask(fetcher, "1") == {}
+    assert seen == ["http://127.0.0.1:7911"]
 

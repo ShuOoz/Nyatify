@@ -13,6 +13,7 @@ from news.source.match.thesportsdb.clubs import (
     club_already_followed,
     official_club_name,
     pick_team,
+    resolve_team,
     search_club_suggestions,
     sport_for_club,
     suggest_clubs,
@@ -25,6 +26,7 @@ async def test_clubs():
     case_pick_team_prefers_the_famous_club_or_asks_for_an_id()
     case_another_squad_counts_once_the_team_id_matches()
     await case_eventsday_waits_out_the_minute_cap()
+    await case_a_wrong_team_id_resolves_the_named_club()
 
 def case_suggest_clubs_covers_alias_typo_and_ambiguous_nicks():
     clubs._club_aliases = None
@@ -48,7 +50,8 @@ def case_suggest_clubs_covers_alias_typo_and_ambiguous_nicks():
     assert "New York Giants" in giants
     assert "San Francisco Giants" in giants
     assert official_club_name("76ers") == "Philadelphia 76ers"
-    assert official_club_name("134113") == "Philadelphia 76ers"
+    assert official_club_name("134863") == "Philadelphia 76ers"
+    assert official_club_name("134113") == "Gil Vicente"
     assert sport_for_club("76ers", stored="Soccer") == "Basketball"
     assert sport_for_club("Barcelona") == "Soccer"
 
@@ -222,3 +225,98 @@ def case_another_squad_counts_once_the_team_id_matches():
         team_id="bilibili-gaming-lol",
         source_name="Bilibili Gaming",
     ) is True
+
+
+def _team(team_id, name, sport, *, league="", league_id="", alternate=""):
+    row = {
+        "idTeam": team_id,
+        "strTeam": name,
+        "strSport": sport,
+        "strLeague": league,
+        "idLeague": league_id,
+    }
+    if alternate:
+        row["strTeamAlternate"] = alternate
+    return row
+
+
+class _Board:
+    def __init__(self, tables):
+        self.calls: list[str] = []
+        self.tables = tables
+
+    async def json(self, path, params, what):
+        del what
+        self.calls.append(path)
+        key = params.get("id") or params.get("t")
+        return {"teams": self.tables[(path, key)]}
+
+
+async def case_a_wrong_team_id_resolves_the_named_club():
+    clubs._club_aliases = None
+    gil = _team("134113", "Gil Vicente", "Soccer", league="Portuguese Primeira Liga")
+    sixers = _team(
+        "134863", "Philadelphia 76ers", "Basketball", league="NBA", league_id="4387"
+    )
+    celtics = _team(
+        "134860", "Boston Celtics", "Basketball", league="NBA", league_id="4387"
+    )
+    wrong = _Board({
+        ("lookupteam.php", "134863"): [gil],
+        ("searchteams.php", "Philadelphia 76ers"): [celtics, sixers],
+    })
+    assert await resolve_team("76ers", client=wrong) == (
+        "134863", "Philadelphia 76ers", "Basketball", "4387",
+    )
+    assert wrong.calls == ["lookupteam.php", "searchteams.php"]
+
+    matched = _Board({("lookupteam.php", "134863"): [sixers]})
+    assert await resolve_team("philadelphia 76ers", client=matched) == (
+        "134863", "Philadelphia 76ers", "Basketball", "4387",
+    )
+    assert matched.calls == ["lookupteam.php"]
+
+    same_sport = _Board({
+        ("lookupteam.php", "134863"): [celtics],
+        ("searchteams.php", "Philadelphia 76ers"): [celtics],
+    })
+    with pytest.raises(FetchError, match="No team named"):
+        await resolve_team("sixers", client=same_sport)
+
+    spurs = _team(
+        "133616", "Tottenham Hotspur", "Soccer",
+        league="English Premier League", league_id="4328",
+        alternate="Tottenham Hotspur Football Club, Spurs, THFC, Tottenham",
+    )
+    tottenham = _Board({("lookupteam.php", "133616"): [spurs]})
+    assert await resolve_team("tottenham", client=tottenham) == (
+        "133616", "Tottenham", "Soccer", "4328",
+    )
+    assert tottenham.calls == ["lookupteam.php"]
+
+    youth = _team("999001", "Tottenham Hotspur U21", "Soccer", league="Youth")
+    junior = _Board({
+        ("lookupteam.php", "133616"): [youth],
+        ("searchteams.php", "Tottenham"): [spurs],
+    })
+    assert await resolve_team("tottenham", client=junior) == (
+        "133616", "Tottenham", "Soccer", "4328",
+    )
+    assert junior.calls == ["lookupteam.php", "searchteams.php"]
+
+    psg = _team(
+        "133714", "Paris Saint-Germain", "Soccer",
+        league="French Ligue 1", league_id="4334",
+        alternate="Paris Saint-Germain Football Club, PSG, Paris SG",
+    )
+    paris = _Board({("lookupteam.php", "133714"): [psg]})
+    assert await resolve_team("psg", client=paris) == (
+        "133714", "Paris SG", "Soccer", "4334",
+    )
+    assert paris.calls == ["lookupteam.php"]
+
+    bare = _Board({("lookupteam.php", "134113"): [gil]})
+    assert await resolve_team("134113", client=bare) == (
+        "134113", "Gil Vicente", "Soccer", "",
+    )
+    assert bare.calls == ["lookupteam.php"]

@@ -58,6 +58,7 @@ def test_follows(news_store, tmp_path):
     case_follow_reload_labels_and_legacy_topics(reload)
     case_source_clock_and_cleared_kickoff(GuildConfig(tmp_path / "plan.json"))
     case_blank_ticket_returns_to_unassigned(GuildConfig(tmp_path / "blank.json"))
+    case_a_labeled_club_uses_its_alias_id(GuildConfig(tmp_path / "clubs.json"))
     case_show_order_and_ref()
 
 def case_announce_features_put_voice_first_and_other_last():
@@ -345,6 +346,81 @@ def case_blank_ticket_returns_to_unassigned(news_store):
     saved = list_news_follows(news_store, GUILD_ID, FEATURE_TICKET)[0]
     assert saved["account"] == "10004"
     assert saved["artist"] == "薛之谦工作室"
+
+
+def case_a_labeled_club_uses_its_alias_id(news_store):
+    added = add_news_follow(
+        news_store, GUILD_ID, "thesportsdb", "134113", FEATURE_MATCH, "Philadelphia 76ers"
+    )
+    assert added["account"] == "134863"
+    assert fill_news_follow(
+        news_store, GUILD_ID, "thesportsdb", "134863",
+        label="Philadelphia 76ers", team_id="134113",
+    ) is False
+    assert list_news_follows(news_store, GUILD_ID)[0]["account"] == "134863"
+
+    news_store.set_guild_list(9, FOLLOWS_KEY, [{
+        "platform": "thesportsdb", "account": "134113", "topic": "match", "label": "Gil Vicente",
+    }])
+    news_store.set_guild_list(10, FOLLOWS_KEY, [{
+        "platform": "thesportsdb", "account": "133604", "topic": "match", "label": "Arsenal",
+    }])
+    news_store.set_guild_list(11, FOLLOWS_KEY, [{
+        "platform": "thesportsdb", "account": "134860", "topic": "match", "label": "Philadelphia 76ers",
+    }])
+    news_store.set_guild_list(12, FOLLOWS_KEY, [{
+        "platform": "thesportsdb", "account": "134113", "topic": "match",
+        "label": "Philadelphia 76ers", "next_kickoff": "2026-10-15T00:00:00+00:00",
+    }])
+    assert list_news_follows(news_store, 9)[0]["account"] == "134113"
+    assert list_news_follows(news_store, 10)[0]["account"] == "133604"
+    fixed = list_news_follows(news_store, 11)[0]
+    assert fixed["account"] == "134863"
+    saved = list_news_follows(news_store, 12)[0]
+    assert saved["account"] == "134863"
+    assert saved["next_kickoff"] == "2026-10-15T00:00:00+00:00"
+    assert news_store.guild_list(12, FOLLOWS_KEY)[0]["account"] == "134863"
+
+    news_store.set_guild_list(13, FOLLOWS_KEY, [
+        {
+            "platform": "thesportsdb", "account": "134113", "topic": "match",
+            "label": "Philadelphia 76ers", "next_kickoff": "2026-10-16T00:00:00+00:00",
+        },
+        {
+            "platform": "thesportsdb", "account": "134863", "topic": "match",
+            "label": "Philadelphia 76ers", "sport": "Basketball",
+        },
+    ])
+    merged = list_news_follows(news_store, 13)
+    assert [item["account"] for item in merged] == ["134863"]
+    assert merged[0]["sport"] == "Basketball"
+    assert "next_kickoff" not in merged[0]
+    assert len(news_store.guild_list(13, FOLLOWS_KEY)) == 1
+
+    news_store.set_guild_list(14, FOLLOWS_KEY, [
+        {"platform": "bilibili", "account": "uid:99", "topic": "game"},
+        {"platform": "thesportsdb", "account": "Arsenal", "topic": "match", "label": "Arsenal"},
+    ])
+    assert [item["account"] for item in list_news_follows(news_store, 14)] == ["99", "133604"]
+    stored = news_store.guild_list(14, FOLLOWS_KEY)
+    assert stored[0]["account"] == "uid:99"
+    assert stored[1]["account"] == "Arsenal"
+
+    news_store.set_guild_list(15, FOLLOWS_KEY, [{
+        "platform": "thesportsdb", "account": "134113", "topic": "match",
+        "label": "Philadelphia 76ers",
+    }])
+    kick = datetime(2026, 10, 15, tzinfo=timezone.utc)
+    assert fill_news_follow(
+        news_store, 15, "thesportsdb", "134113", fetched_at=kick, next_kickoff=kick,
+    ) is True
+    shifted = list_news_follows(news_store, 15)[0]
+    assert shifted["account"] == "134863"
+    assert shifted["next_kickoff"] == kick.isoformat()
+    assert fill_news_follow(
+        news_store, 15, "thesportsdb", "134863", team_id="134113",
+    ) is False
+    assert list_news_follows(news_store, 15)[0]["account"] == "134863"
 
 
 def case_show_order_and_ref():

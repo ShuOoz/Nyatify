@@ -49,7 +49,7 @@ def fresh_state(base):
     undo = (
         swap(common, "exits", ExitBook(base / "proxy_exits.json")),
         swap(bili_round, "rotation", Rotation(base / "bili_rotation.json")),
-        swap(bili_round, "cap", common.ProxyRest(base / "bili_empty_cap.json")),
+        swap(bili_round, "cap", common.ProxyRest(base / "bili_timeout.json")),
         swap(bili_round, "blanks", BlankPlan(base / "bili_blank.json")),
         swap(bili_app, "buvid_store", PhoneBook(base / "bili_phones.json")),
         point(weibo_rest, base / "weibo_rest.json", "_out"),
@@ -137,6 +137,8 @@ def _no_proxy(monkeypatch):
     monkeypatch.setattr(live_settings, "weibo_proxy", None)
     monkeypatch.setattr(live_settings, "weibo_proxies", ())
     monkeypatch.setattr(live_settings, "ai_proxy", None)
+    monkeypatch.setattr(live_settings, "sportsdb_proxies", ())
+    monkeypatch.setattr(live_settings, "sportsdb_proxy_cooldown", 60)
     monkeypatch.setattr(live_settings, "ip_check", False)
     monkeypatch.setattr(live_settings, "lastfm_api_key", None)
     monkeypatch.setattr(live_settings, "nodelink_uri", None)

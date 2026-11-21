@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -11,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from config import settings
-from fetch import BookmarkStore, FetchError, FetchedItem, GetText, get_text
+from fetch import BookmarkStore, FetchError, FetchedItem, GetText, aiohttp_get, get_text
 from news.source.match.common import pinned_event_ids
 from news.source.match.thesportsdb.clubs import (
     DEFAULT_SPORTSDB_BASE,
@@ -31,6 +32,36 @@ log = logging.getLogger(__name__)
 
 # A sports follow can be seeded without bookmarking live or upcoming cards.
 BOOKMARK_SEEDED = "*"
+
+
+class _SportsdbExits:
+    """Clash ports in turn. A cooled port stays out until its rest ends."""
+
+    def __init__(
+        self, proxies: Sequence[str], cooldown: float, clock: Callable[[], float],
+    ) -> None:
+        self._proxies = tuple(dict.fromkeys(proxy.strip() for proxy in proxies if proxy.strip()))
+        self._cooldown = cooldown
+        self._clock = clock
+        self._until: dict[str, float] = {}
+        self._at = 0
+
+    def __len__(self) -> int:
+        return len(self._proxies)
+
+    def now(self) -> float:
+        return self._clock()
+
+    def take(self, now: float) -> str | None:
+        for _ in self._proxies:
+            proxy = self._proxies[self._at % len(self._proxies)]
+            self._at += 1
+            if self._until.get(proxy, 0.0) <= now:
+                return proxy
+        return None
+
+    def cool(self, proxy: str, now: float) -> None:
+        self._until[proxy] = now + self._cooldown
 
 
 def _aware(when: datetime) -> datetime:
@@ -86,13 +117,21 @@ class Fetcher:
         bili_buvid: str | None = None,
         weibo_cookie: str | None = None,
         weibo_call: Callable[..., Awaitable[Any]] | None = None,
+        sportsdb_proxies: Sequence[str] | None = None,
+        sportsdb_cooldown: float | None = None,
+        monotonic: Callable[[], float] | None = None,
     ) -> None:
         self._get_text = get_text
         self._now = now
+        self._sportsdb_exits = _SportsdbExits(
+            settings.sportsdb_proxies if sportsdb_proxies is None else sportsdb_proxies,
+            settings.sportsdb_proxy_cooldown if sportsdb_cooldown is None else sportsdb_cooldown,
+            monotonic or time.monotonic,
+        )
         self.sportsdb_base = sportsdb_base
         self.sportsdb_key = sportsdb_key
         self.sportsdb = SportsdbClient(
-            self._get,
+            self._sportsdb_get,
             base=sportsdb_base or DEFAULT_SPORTSDB_BASE,
             key=sportsdb_key or DEFAULT_SPORTSDB_KEY,
         )
@@ -243,6 +282,41 @@ class Fetcher:
 
     async def _get(self, url: str, headers: dict[str, str] | None) -> str:
         return await get_text(url, headers, getter=self._get_text)
+
+    async def _sportsdb_get(self, url: str, headers: dict[str, str] | None) -> str:
+        """Round-robin the SportsDB exits. A rate limit rests that exit.
+
+        A connect failure, or no exit left, tries this request once with no proxy.
+        Any other HTTP error fails this request.
+        """
+        now = self._sportsdb_exits.now()
+        for _ in range(len(self._sportsdb_exits)):
+            proxy = self._sportsdb_exits.take(now)
+            if proxy is None:
+                break
+            try:
+                return await self._sportsdb_fetch(url, headers, proxy)
+            except FetchError as exc:
+                if exc.status == 429:
+                    self._sportsdb_exits.cool(proxy, now)
+                    continue
+                if exc.status is None:
+                    self._sportsdb_exits.cool(proxy, now)
+                    return await self._sportsdb_fetch(url, headers, None)
+                raise
+        return await self._sportsdb_fetch(url, headers, None)
+
+    async def _sportsdb_fetch(
+        self, url: str, headers: dict[str, str] | None, proxy: str | None,
+    ) -> str:
+        if proxy is None:
+            return await self._get(url, headers)
+        target = self._get_text or aiohttp_get
+
+        async def once(_url: str, _headers: dict[str, str] | None) -> str:
+            return await target(_url, _headers, proxy=proxy)
+
+        return await get_text(url, headers, getter=once)
 
 
 def _reopen_edits(words: Mapping[str, str], got: PullResult) -> PullResult:

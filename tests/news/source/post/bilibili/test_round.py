@@ -39,6 +39,7 @@ def test_the_window_and_what_it_saves(caplog, tmp_path):
     case_roster_uses_the_configured_phone_and_account_counts()
     case_rotation_saves_and_resets_on_a_new_roster(scratch(tmp_path, "rotation_saves_and_resets_on_a_new_roster"), caplog)
     case_a_412_rest_sits_out_once(scratch(tmp_path, "a_412_rest_sits_out_once"))
+    case_an_old_empty_cap_file_moves_once(scratch(tmp_path, "an_old_empty_cap_file_moves_once"))
     case_a_blank_plan_remembers_the_account(scratch(tmp_path, "a_blank_plan_remembers_the_account"))
 
 
@@ -199,6 +200,32 @@ def case_a_412_rest_sits_out_once(tmp_path):
     again = ProxyRest(path)
     assert again.sits_out("http://blocked")
     assert again.sits_out("http://blank") is False
+
+
+def case_an_old_empty_cap_file_moves_once(tmp_path):
+    legacy = tmp_path / "bili_rest.json"
+    current = tmp_path / "bili_timeout.json"
+    legacy.write_text(json.dumps({"http://p0": {"sit_out": True}}) + "\n", encoding="utf-8")
+    bili_round._adopt_previous(current, "bili_rest.json")
+    assert not legacy.exists()
+    assert ProxyRest(current).sits_out("http://p0")
+
+    older = tmp_path / "bili_empty_cap.json"
+    older.write_text(json.dumps({"http://old": {"sit_out": True}}) + "\n", encoding="utf-8")
+    bili_round._adopt_previous(current, "bili_empty_cap.json")
+    assert older.exists()
+    kept = ProxyRest(current)
+    assert kept.sits_out("http://p0")
+    assert kept.sits_out("http://old") is False
+
+    alone = tmp_path / "alone"
+    alone.mkdir()
+    old_only = alone / "bili_empty_cap.json"
+    moved = alone / "bili_timeout.json"
+    old_only.write_text(json.dumps({"http://cap": {"sit_out": True}}) + "\n", encoding="utf-8")
+    bili_round._adopt_previous(moved, "bili_empty_cap.json")
+    assert not old_only.exists()
+    assert ProxyRest(moved).sits_out("http://cap")
 
 
 def case_a_blank_plan_remembers_the_account(tmp_path):

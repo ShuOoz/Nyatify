@@ -8,7 +8,7 @@ The card goes to this server's voice announce channel.
 
 # 🖼️ Example
 
-<img src="../image/docs_image/voice-notice.png" alt="Voice notice: a ping, then a card for the person who joined" width="560" />
+<img src="../image/docs_image/voice/voice_notice.png" alt="Voice notice: a ping, then a card for the person who joined" width="560" />
 
 # ⌨️ Commands
 

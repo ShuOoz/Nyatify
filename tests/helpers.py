@@ -395,7 +395,10 @@ class FakeHttp:
         self.bodies = bodies
         self.urls: list[str] = []
 
-    async def __call__(self, url: str, _headers: dict[str, str] | None) -> str:
+    async def __call__(
+        self, url: str, _headers: dict[str, str] | None, proxy: str | None = None,
+    ) -> str:
+        del proxy
         self.urls.append(url)
         if url not in self.bodies:
             raise FetchError(f"unexpected url {url}")

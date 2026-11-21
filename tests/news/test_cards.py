@@ -216,6 +216,25 @@ def case_news_embed_urls_breaks_and_recap():
     assert soccer.description.endswith(
         "**Home**\nSaka 12'\nHavertz 40'\n\n**Away**\nPalmer 55'"
     )
+    story = fetched_item(
+        platform="thesportsdb",
+        text=(
+            "**Game Status** | Over\n**Home** | Inter Miami\n"
+            "**League** | American Major League Soccer\n\n**Details**\n"
+            "Barcelona came from behind.\n"
+            "Home\nIan Fray 14'\nAway\nLiel Abada 50'"
+        ),
+        tags=("match", "end"),
+    )
+    kept = news_embed(
+        story,
+        FEATURE_MATCH,
+        summary="They remain top of LaLiga.\nThat was after 12 matches.\nHome\nIan Fray 14'\nAway\nLiel Abada 50'",
+    )
+    assert kept.description is not None
+    assert kept.description.endswith("**Home**\nIan Fray 14'\n\n**Away**\nLiel Abada 50'")
+    assert "came from behind" not in kept.description
+    assert "LaLiga" not in kept.description
     long = "x" * (MATCH_RECAP_CHARS + 40)
     assert len(apply_match_recap(end_notes.text, long).splitlines()[-1]) <= MATCH_RECAP_CHARS
     full = news_embed(end_notes, FEATURE_MATCH, summary="Saka " + "x" * 300)

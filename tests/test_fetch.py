@@ -11,6 +11,7 @@ from fetch import (
     BookmarkStore,
     FetchedItem,
     FetchError,
+    aiohttp_get,
     format_fetched_item,
     get_text,
     poll_delay,
@@ -19,9 +20,10 @@ from fetch import (
 from tests.helpers import scratch
 
 
-async def test_fetch(tmp_path):
+async def test_fetch(tmp_path, monkeypatch):
     case_bookmarks_delay_and_errors(scratch(tmp_path, "bookmarks_delay_and_errors"))
     await case_get_text_keeps_the_underlying_error()
+    await case_a_proxy_is_passed_to_the_session(monkeypatch)
 
 
 def case_bookmarks_delay_and_errors(tmp_path):
@@ -212,3 +214,43 @@ async def case_get_text_keeps_the_underlying_error():
     assert "eventsnext.php" in text
     assert "key=secret" not in text
     assert "id=1" not in text
+
+
+async def case_a_proxy_is_passed_to_the_session(monkeypatch):
+    import aiohttp
+
+    seen: dict[str, str | None] = {}
+
+    class _Response:
+        status = 200
+
+        async def text(self) -> str:
+            return "ok"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc) -> None:
+            return None
+
+    class _Session:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc) -> None:
+            return None
+
+        def get(self, url, headers=None, **kwargs):
+            del url, headers
+            seen["proxy"] = kwargs.get("proxy")
+            return _Response()
+
+    monkeypatch.setattr(aiohttp, "ClientSession", _Session)
+    url = "https://www.thesportsdb.com/api/v1/json/123/eventsnext.php"
+    assert await aiohttp_get(url, None) == "ok"
+    assert seen["proxy"] is None
+    assert await aiohttp_get(url, None, proxy="http://127.0.0.1:7911") == "ok"
+    assert seen["proxy"] == "http://127.0.0.1:7911"
