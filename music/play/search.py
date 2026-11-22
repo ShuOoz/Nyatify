@@ -42,7 +42,7 @@ from music.source import (
 
 log = logging.getLogger(__name__)
 
-TITLE = "## Osaka Play"
+TITLE = "## Nya Play"
 
 
 def _window(count: int, page: int) -> tuple[int, int, int, int]:

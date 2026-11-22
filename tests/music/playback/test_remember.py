@@ -799,7 +799,7 @@ def _song(title: str):
 
 async def case_a_lost_current_song_keeps_the_next_one_on(monkeypatch):
     """The song on now can vanish. The queue stays, and someone in the channel still has a song."""
-    from cogs.osa_musify import OsaMusify
+    from cogs.nya_musify import NyaMusify
     from music.playlist.card import now_text
 
     import music.playback as playback
@@ -867,7 +867,7 @@ async def case_a_lost_current_song_keeps_the_next_one_on(monkeypatch):
         press.user.voice.channel = channel
         press.response.is_done.return_value = False
         press.response.send_message = AsyncMock()
-        cog = OsaMusify(MagicMock())
+        cog = NyaMusify(MagicMock())
         await cog.player.callback(cog, press)
         shown = press.response.send_message.await_args.kwargs["view"]
         assert "Nothing is playing" not in shown.heading.content
@@ -976,7 +976,7 @@ async def test_a_paused_leave_keeps_the_song():
     await case_the_player_card_still_opens_for_a_paused_song_after_the_bot_leaves()
 
 async def case_the_player_card_still_opens_for_a_paused_song_after_the_bot_leaves():
-    from cogs.osa_musify import _on_now
+    from cogs.nya_musify import _on_now
 
     guild, _member, _player = await _paused_with_next(9811)
     try:

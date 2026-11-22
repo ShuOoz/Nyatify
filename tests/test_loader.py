@@ -18,8 +18,8 @@ def test_selected_extensions():
     assert "cogs.admin" in extensions
     assert selected_extensions(["voice"]) == ["cogs.voice_notify"]
     assert selected_extensions(["news"]) == ["cogs.news_notify"]
-    assert selected_extensions(["music"]) == ["cogs.osa_musify"]
-    assert selected_extensions(["osa_musify"]) == ["cogs.osa_musify"]
+    assert selected_extensions(["music"]) == ["cogs.nya_musify"]
+    assert selected_extensions(["nya_musify"]) == ["cogs.nya_musify"]
     assert selected_extensions(["cogs.admin"]) == ["cogs.admin"]
     assert selected_extensions(["not_a_real_cog"]) == []
 
@@ -31,7 +31,7 @@ def test_feature_packages_follow_the_cog_that_owns_them():
     assert voice == ()
     assert news == ("ai", "fetch", "news")
     assert music == ("music",)
-    assert cog_feature_packages("osa_musify") == music
+    assert cog_feature_packages("nya_musify") == music
     assert cog_feature_packages("admin") == ()
     assert set(voice).isdisjoint(news)
     assert set(voice).isdisjoint(music)

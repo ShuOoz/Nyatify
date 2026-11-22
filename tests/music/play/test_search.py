@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import discord
 
-from cogs.osa_musify import OsaMusify
+from cogs.nya_musify import NyaMusify
 from music.panel import (
     LABEL_PLAYER,
     LABEL_QUEUE,
@@ -62,7 +62,7 @@ async def test_a_name_lists_songs_until_one_is_added(monkeypatch):
     rows = _action_rows(view)
     title = view.children[0].children[0]
     assert isinstance(title, discord.ui.Section)
-    assert title.children[0].content == "## Osaka Play"
+    assert title.children[0].content == "## Nya Play"
     assert title.accessory.label == MARK_SEARCH
     rule = view.children[0].children[1]
     assert isinstance(rule, discord.ui.Separator)
@@ -347,7 +347,7 @@ async def case_a_song_already_playing_does_not_say_it_is_starting(monkeypatch):
     await _sections(view)[0].accessory.callback(press)
     assert notes == ["Starting Ocean Drive"]
 
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     monkeypatch.setattr(MusicPlayer, "follow", lambda self, message: None)
     sent = MagicMock()
     press = _ask()
@@ -385,7 +385,7 @@ async def case_an_add_keeps_the_platform_from_the_click(monkeypatch):
     assert seen == ["apple"]
 
 async def test_playlist_and_player_open_beside_the_search(monkeypatch):
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     monkeypatch.setattr(MusicPlayer, "follow", lambda self, message: None)
     monkeypatch.setattr(
         "music.play.search.now_playing",

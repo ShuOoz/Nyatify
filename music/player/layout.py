@@ -16,7 +16,7 @@ from music.playback.remember import _coming, _song_name, cover_url
 from music.player.rule import hinted_modes, next_title
 
 log = logging.getLogger(__name__)
-TITLE = "## Osaka Player"
+TITLE = "## Nya Player"
 # ► is 0.990 em beside the fillers; the square is 1.000 em. U+FE0E keeps the square a mark.
 PAUSE_MARK, PLAY_MARK = "\u25fc\ufe0e", "\u25ba"
 # The lower row is 0.178 em short. A hair space is 0.070 em, one on each side of close.

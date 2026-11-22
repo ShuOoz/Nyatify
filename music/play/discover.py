@@ -39,7 +39,7 @@ log = logging.getLogger(__name__)
 
 # The empty card is only a chooser, so it leaves sooner than a card you keep using.
 EMPTY_SECONDS = 15.0
-TITLE = "## Osaka Play"
+TITLE = "## Nya Play"
 PICK_SONG = "**Pick a random song**"
 PICK_RADIO = "**Pick a radio station**"
 PICK_LIST = "**Pick a playlist**"

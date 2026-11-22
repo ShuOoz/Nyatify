@@ -184,7 +184,7 @@ async def case_the_queue_card_turns_the_page(tmp_path):
         view.message.edit = AsyncMock()
         view.to_components()
         text = _text(view)
-        assert text.startswith("## Osaka Playlist")
+        assert text.startswith("## Nya Playlist")
         assert "### Now Playing" in text
         assert "**[Song 1](https://example.com/song-1)**" in text
         assert "https://example.com/song-2" not in text

@@ -46,7 +46,7 @@ log = logging.getLogger(__name__)
 
 # No press for this long removes the album. A button starts that wait again.
 ALBUM_SECONDS = 45.0
-ALBUM_TITLE = "## Osaka Albums"
+ALBUM_TITLE = "## Nya Albums"
 ALL_HINT = 'This adds every song on the album. Type "yes" to confirm'
 _FAILED = "Something went wrong while starting the song."
 

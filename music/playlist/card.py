@@ -20,7 +20,7 @@ from music.playback import Queued, now_playing, played, queued, unwatch_line, wa
 from music.source import platform_label
 
 _READ_AT_ONCE = 4
-TITLE = "## Osaka Playlist"
+TITLE = "## Nya Playlist"
 QUEUE, HISTORY, PLAYLISTS = "Queue", "History", "Playlist"
 MARK_DELETE, MARK_MINUS, MARK_MOVE = "⌫", "－", "⇵"
 PICK = "Pick a playlist"

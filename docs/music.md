@@ -22,13 +22,13 @@ The player card stays in the text channel. Join a voice channel first.
 
 `/music player`: pause, skip, volume, shuffle, repeat, radio, and save.
 
-<img src="../image/docs_image/music/music_play_player.png" alt="Osaka Player: My Funny Valentine is on, with transport and tool buttons" width="400" />
+<img src="../image/docs_image/music/music_play_player.png" alt="Nya Player: My Funny Valentine is on, with transport and tool buttons" width="400" />
 
 ## Music Play - Playlist
 
 `/music playlist`: the queue, history, and saved lists.
 
-<img src="../image/docs_image/music/music_play_playlist.png" alt="Osaka Playlist: My Funny Valentine is on, queue and history tabs" width="400" />
+<img src="../image/docs_image/music/music_play_playlist.png" alt="Nya Playlist: My Funny Valentine is on, queue and history tabs" width="400" />
 
 # ⌨️ Commands
 
@@ -71,16 +71,16 @@ You are allowed to make changes manually in `music/player/layout.py` and `music/
 
 ```python
 # music/player/layout.py
-TITLE = "## Osaka Player"
+TITLE = "## Nya Player"
 
 # music/play/discover.py
-TITLE = "## Osaka Play"
+TITLE = "## Nya Play"
 
 # music/playlist/card.py
-TITLE = "## Osaka Playlist"
+TITLE = "## Nya Playlist"
 
 # music/player/album.py
-ALBUM_TITLE = "## Osaka Albums"
+ALBUM_TITLE = "## Nya Albums"
 ALBUM_SECONDS = 45.0  # 45 seconds
 
 # music/lavalink.py

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import discord
 
-from cogs.osa_musify import OsaMusify
+from cogs.nya_musify import NyaMusify
 from guild import GuildConfig
 from music.panel import MARK_ANY, MARK_SEARCH, PANEL_SECONDS
 from music.play.discover import EMPTY_SECONDS, GenreList, _kept
@@ -33,10 +33,10 @@ async def case_the_empty_card_picks_or_stays(monkeypatch):
 
 async def case_a_discover_search_that_fails_leaves_the_card(monkeypatch):
     monkeypatch.setattr(
-        "cogs.osa_musify.find_songs",
+        "cogs.nya_musify.find_songs",
         AsyncMock(return_value="Lavalink is not connected."),
     )
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     message = MagicMock()
     message.delete = AsyncMock()
     view = GenreList("spotify", AsyncMock(), cog._search)
@@ -396,7 +396,7 @@ async def case_a_genre_plays_one_random_match(monkeypatch):
     assert {button.label: button.phrase for button in view.buttons} == dict(GENRES)
     parts = view.children[0].children
     assert isinstance(parts[0], discord.ui.Section)
-    assert parts[0].children[0].content == "## Osaka Play"
+    assert parts[0].children[0].content == "## Nya Play"
     assert parts[0].accessory.label == MARK_SEARCH
     assert isinstance(parts[1], discord.ui.Separator)
     assert parts[1].visible is True

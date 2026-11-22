@@ -86,7 +86,7 @@ async def test_reload_refreshes_feature_modules_before_each_cog(cog, monkeypatch
     cases = (
         ("voice", "cogs.voice_notify"),
         ("news", "cogs.news_notify"),
-        ("music", "cogs.osa_musify"),
+        ("music", "cogs.nya_musify"),
     )
     for name, extension in cases:
         cog.bot.extensions = {extension: object()}
@@ -96,8 +96,8 @@ async def test_reload_refreshes_feature_modules_before_each_cog(cog, monkeypatch
         ("cog", "cogs.voice_notify"),
         ("modules", "cogs.news_notify"),
         ("cog", "cogs.news_notify"),
-        ("modules", "cogs.osa_musify"),
-        ("cog", "cogs.osa_musify"),
+        ("modules", "cogs.nya_musify"),
+        ("cog", "cogs.nya_musify"),
     ]
 
 
@@ -127,15 +127,15 @@ async def test_reload_acknowledges_before_the_cog_comes_back(cog, monkeypatch):
 
     monkeypatch.setattr("cogs.admin.reload_cog_modules", reload_modules)
     cog.bot.reload_extension = reload_extension
-    cog.bot.extensions = {"cogs.osa_musify": object()}
+    cog.bot.extensions = {"cogs.nya_musify": object()}
     await cog.reload_cog.callback(cog, interaction, "music")
     interaction.response.defer.assert_awaited_once_with(ephemeral=False)
     interaction.response.send_message.assert_not_awaited()
     sent = interaction.followup.send.await_args.kwargs["content"]
     assert "Reloaded" in sent and "`music`" in sent
     assert order == [
-        ("modules", True, "cogs.osa_musify"),
-        ("cog", True, "cogs.osa_musify"),
+        ("modules", True, "cogs.nya_musify"),
+        ("cog", True, "cogs.nya_musify"),
     ]
 
 
@@ -144,7 +144,7 @@ async def test_reload_stops_when_feature_modules_fail(cog, monkeypatch):
         raise SyntaxError("panel")
 
     monkeypatch.setattr("cogs.admin.reload_cog_modules", boom)
-    cog.bot.extensions = {"cogs.osa_musify": object()}
+    cog.bot.extensions = {"cogs.nya_musify": object()}
     ctx = fake_context()
     await cog.reload_cog.callback(cog, ctx, "music")
     cog.bot.reload_extension.assert_not_awaited()

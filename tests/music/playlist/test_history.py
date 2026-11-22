@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import discord
 
-from cogs.osa_musify import OsaMusify
+from cogs.nya_musify import NyaMusify
 from guild import GuildConfig
 from music.panel import LABEL_PLAYER, MARK_ADD, MARK_BACK, MARK_CLOSE, MARK_NEXT
 from music.player.card import MusicPlayer
@@ -77,7 +77,7 @@ async def test_an_empty_queue_opens_the_player_when_a_song_starts(monkeypatch):
 
         member.voice.channel.connect = AsyncMock(side_effect=connect)
 
-        cog = OsaMusify(MagicMock())
+        cog = NyaMusify(MagicMock())
         monkeypatch.setattr(MusicPlayer, "follow", lambda self, message: None)
         interaction = _ask()
         interaction.guild = guild

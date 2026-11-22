@@ -37,7 +37,7 @@ _PLAYER_FAILED = "Something went wrong while opening the player."
 _LIST_FAILED = "Something went wrong while showing the list."
 
 
-class OsaMusify(commands.Cog):
+class NyaMusify(commands.Cog):
     """Apple Music, YouTube, Spotify, SoundCloud, and NetEase."""
 
     music = app_commands.Group(
@@ -556,4 +556,4 @@ def _record_id(holder: object | None) -> int | None:
 
 
 async def setup(bot: commands.Bot) -> None:
-    await bot.add_cog(OsaMusify(bot))
+    await bot.add_cog(NyaMusify(bot))

@@ -10,7 +10,7 @@
 
 ## Music Play - 搜歌
 
-<code>/music play<span class="arg arg-blank" title="不填"></span></code>：搜索栏什么都不填，打开 Osaka Play，从风格、电台或已保存的歌单里选歌。
+<code>/music play<span class="arg arg-blank" title="不填"></span></code>：搜索栏什么都不填，打开 Nya Play，从风格、电台或已保存的歌单里选歌。
 
 <img src="../image/docs_image/music/music_play_empty.png" alt="不填参数的 /music play：风格、电台和已保存的歌单" width="400" />
 
@@ -22,13 +22,13 @@
 
 `/music player`：打开正在播放的卡片，用来暂停、切歌、调音量，也可以随机、单曲循环、开电台或收藏。
 
-<img src="../image/docs_image/music/music_play_player.png" alt="Osaka Player：正在播放 My Funny Valentine，下方是控制和功能按钮" width="400" />
+<img src="../image/docs_image/music/music_play_player.png" alt="Nya Player：正在播放 My Funny Valentine，下方是控制和功能按钮" width="400" />
 
 ## Music Play - 歌单
 
 `/music playlist`：查看正在排队的歌、听过的记录，以及保存下来的歌单。
 
-<img src="../image/docs_image/music/music_play_playlist.png" alt="Osaka Playlist：正在播放 My Funny Valentine，可切换队列和历史" width="400" />
+<img src="../image/docs_image/music/music_play_playlist.png" alt="Nya Playlist：正在播放 My Funny Valentine，可切换队列和历史" width="400" />
 
 # ⌨️ 命令
 
@@ -71,16 +71,16 @@
 
 ```python
 # music/player/layout.py
-TITLE = "## Osaka Player"
+TITLE = "## Nya Player"
 
 # music/play/discover.py
-TITLE = "## Osaka Play"
+TITLE = "## Nya Play"
 
 # music/playlist/card.py
-TITLE = "## Osaka Playlist"
+TITLE = "## Nya Playlist"
 
 # music/player/album.py
-ALBUM_TITLE = "## Osaka Albums"
+ALBUM_TITLE = "## Nya Albums"
 ALBUM_SECONDS = 45.0  # 45 秒
 
 # music/lavalink.py

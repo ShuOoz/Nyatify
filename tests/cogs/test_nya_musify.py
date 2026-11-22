@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import discord
 
-from cogs.osa_musify import OsaMusify
+from cogs.nya_musify import NyaMusify
 from guild import GuildConfig, guild_config
 from music.panel import MARK_SEARCH, PANEL_SECONDS
 from music.play.discover import EMPTY_SECONDS, GenreList
@@ -50,7 +50,7 @@ async def _settle() -> None:
         await asyncio.wait_for(asyncio.gather(*pending), timeout=2)
 
 
-async def _finish(cog: OsaMusify) -> None:
+async def _finish(cog: NyaMusify) -> None:
     for panel in list(cog._panels):
         panel.shutdown()
     for view in list(cog._playlist_cards.values()):
@@ -112,7 +112,7 @@ async def _play_link(monkeypatch, cog, guild, channel, title: str):
     async def search(*_args, **_kwargs):
         return Found("https://open.spotify.com/track/abc", "spotify", [track], True)
 
-    monkeypatch.setattr("cogs.osa_musify.find_songs", search)
+    monkeypatch.setattr("cogs.nya_musify.find_songs", search)
     playing = getattr(guild, "voice_client", None)
     if playing is None:
         _join_as(guild, channel)
@@ -136,15 +136,15 @@ async def _play_link(monkeypatch, cog, guild, channel, title: str):
     return press
 
 def case_commands_are_play_player_and_playlist():
-    names = {command.name for command in OsaMusify.music.walk_commands()}
+    names = {command.name for command in NyaMusify.music.walk_commands()}
     assert names == {"play", "player", "playlist"}
-    assert OsaMusify.music.name == "music"
-    shown = next(command for command in OsaMusify.music.walk_commands() if command.name == "player")
+    assert NyaMusify.music.name == "music"
+    shown = next(command for command in NyaMusify.music.walk_commands() if command.name == "player")
     assert shown.description == "Show the music player"
-    listed = next(command for command in OsaMusify.music.walk_commands() if command.name == "playlist")
+    listed = next(command for command in NyaMusify.music.walk_commands() if command.name == "playlist")
     assert listed.description == "Show the queue, playlists, and songs already played"
     assert listed.parameters == []
-    play = next(command for command in OsaMusify.music.walk_commands() if command.name == "play")
+    play = next(command for command in NyaMusify.music.walk_commands() if command.name == "play")
     assert play.description == "Play a song or a link. Leave it empty to pick a random song"
     assert [parameter.name for parameter in play.parameters] == ["search"]
     search = play.parameters[0]
@@ -155,7 +155,7 @@ async def test_a_kick_removes_the_player_and_keeps_the_queue(monkeypatch):
     """The bot is removed from voice. The card goes. The queue is still there to open."""
     monkeypatch.setattr("music.player.sync.asyncio.sleep", _hold)
     guild, player, track = await _playing()
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     cog.bot.user.id = 50
     try:
         waiting = _named("After")
@@ -198,7 +198,7 @@ async def test_a_leave_without_the_old_channel_still_takes_the_card(monkeypatch)
 
     monkeypatch.setattr("music.player.sync.asyncio.sleep", _hold)
     guild, player, _track = await _playing()
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     cog.bot.user.id = 50
     try:
         message = await _summon_player(cog, guild, player)
@@ -242,7 +242,7 @@ async def test_a_reconnect_leave_keeps_the_player(monkeypatch):
     """A leave that arrives after the bot is already back does not close the card."""
     monkeypatch.setattr("music.player.sync.asyncio.sleep", _hold)
     guild, player, _track = await _playing()
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     cog.bot.user.id = 50
     try:
         message = await _summon_player(cog, guild, player)
@@ -267,7 +267,7 @@ async def test_five_quiet_minutes_leave_and_the_next_song_posts_the_player(monke
     """A song on stays. After it ends, five quiet minutes leave, and the next song posts a card."""
     monkeypatch.setattr("music.player.sync.asyncio.sleep", _hold)
     guild, player, _track = await _playing()
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     try:
         message = await _summon_player(cog, guild, player)
         card = cog._panels[0]
@@ -315,7 +315,7 @@ async def test_five_paused_minutes_leave_and_the_song_can_be_opened(monkeypatch)
 
     monkeypatch.setattr("music.playback.idle._wait", no_wait)
     guild, player, track = await _playing()
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     try:
         message = await _summon_player(cog, guild, player)
         card = cog._panels[0]
@@ -405,7 +405,7 @@ async def test_play(monkeypatch):
         await case_a_link_while_paused_stays_quiet_and_out(patch)
 
 async def case_play_opens_genres_a_list_or_the_song(monkeypatch):
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     monkeypatch.setattr(MusicPlayer, "follow", lambda self, message: None)
 
     async def blank(song):
@@ -418,7 +418,7 @@ async def case_play_opens_genres_a_list_or_the_song(monkeypatch):
         assert view.platform == "spotify"
 
     search = AsyncMock()
-    monkeypatch.setattr("cogs.osa_musify.find_songs", search)
+    monkeypatch.setattr("cogs.nya_musify.find_songs", search)
     await blank(None)
     await blank("   ")
     search.assert_not_awaited()
@@ -430,7 +430,7 @@ async def case_play_opens_genres_a_list_or_the_song(monkeypatch):
     track = _named("One Wish", "Ray J")
     search.return_value = Found("one wish", "apple", [track], False)
     queued = AsyncMock()
-    monkeypatch.setattr("cogs.osa_musify.queue_tracks", queued)
+    monkeypatch.setattr("cogs.nya_musify.queue_tracks", queued)
     await cog.play.callback(cog, interaction, "one wish")
     search.assert_awaited_once_with(interaction.guild, "one wish", NAME_SEARCH_PLATFORM)
     view = interaction.edit_original_response.await_args.kwargs["view"]
@@ -510,7 +510,7 @@ async def case_play_opens_genres_a_list_or_the_song(monkeypatch):
     interaction.response.is_done.return_value = True
     interaction.edit_original_response = AsyncMock()
     search.return_value = "Spotify did not answer."
-    monkeypatch.setattr("cogs.osa_musify.heard_title", AsyncMock(return_value="One Wish Ray J"))
+    monkeypatch.setattr("cogs.nya_musify.heard_title", AsyncMock(return_value="One Wish Ray J"))
     await cog.play.callback(cog, interaction, "https://open.spotify.com/track/abc")
     titled = interaction.edit_original_response.await_args.kwargs["view"]
     assert isinstance(titled, MatchList)
@@ -521,7 +521,7 @@ async def case_play_opens_genres_a_list_or_the_song(monkeypatch):
     interaction = _ask()
     interaction.response.is_done.return_value = True
     interaction.edit_original_response = AsyncMock()
-    monkeypatch.setattr("cogs.osa_musify.heard_title", AsyncMock(return_value=""))
+    monkeypatch.setattr("cogs.nya_musify.heard_title", AsyncMock(return_value=""))
     await cog.play.callback(cog, interaction, "https://open.spotify.com/track/def")
     assert "Spotify did not answer" in interaction.edit_original_response.await_args.kwargs["content"]
 
@@ -537,13 +537,13 @@ async def case_an_artist_link_opens_a_list(monkeypatch):
     monkeypatch.setattr("music.lavalink.node_is_ready", lambda: True)
     songs = [_named("One"), _named("Two")]
     monkeypatch.setattr("music.source.search_track", AsyncMock(return_value=songs))
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     interaction = _ask()
     interaction.response.is_done.return_value = True
     interaction.edit_original_response = AsyncMock()
     _hearing(interaction.guild)
     queued = AsyncMock()
-    monkeypatch.setattr("cogs.osa_musify.queue_tracks", queued)
+    monkeypatch.setattr("cogs.nya_musify.queue_tracks", queued)
     try:
         await cog.play.callback(cog, interaction, "https://open.spotify.com/artist/abc")
         queued.assert_not_awaited()
@@ -556,15 +556,15 @@ async def case_an_artist_link_opens_a_list(monkeypatch):
 
 async def case_several_songs_stay_on_screen(monkeypatch):
     """An album add names the count. One song still stays quiet."""
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     link = _named("Ocean Drive")
 
     async def search(*_args, **_kwargs):
         return Found("https://open.spotify.com/album/abc", "spotify", [link, link], True)
 
-    monkeypatch.setattr("cogs.osa_musify.find_songs", search)
+    monkeypatch.setattr("cogs.nya_musify.find_songs", search)
     queued = AsyncMock(return_value="Added 4 songs.")
-    monkeypatch.setattr("cogs.osa_musify.queue_tracks", queued)
+    monkeypatch.setattr("cogs.nya_musify.queue_tracks", queued)
     monkeypatch.setattr(MusicPlayer, "follow", lambda self, message: None)
     try:
         interaction = _ask()
@@ -603,19 +603,19 @@ async def case_several_songs_stay_on_screen(monkeypatch):
 
 async def case_a_link_while_paused_stays_quiet_and_out(monkeypatch):
     warmed = MagicMock()
-    monkeypatch.setattr("cogs.osa_musify.paused_away", lambda guild: True)
-    monkeypatch.setattr("cogs.osa_musify.warm_voice", warmed)
+    monkeypatch.setattr("cogs.nya_musify.paused_away", lambda guild: True)
+    monkeypatch.setattr("cogs.nya_musify.warm_voice", warmed)
     monkeypatch.setattr(
-        "cogs.osa_musify.find_songs",
+        "cogs.nya_musify.find_songs",
         AsyncMock(return_value=Found("https://open.spotify.com/track/abc", "spotify", [_named("Ocean Drive")], True)),
     )
     monkeypatch.setattr(
-        "cogs.osa_musify.queue_tracks",
+        "cogs.nya_musify.queue_tracks",
         AsyncMock(return_value="Added Ocean Drive."),
     )
-    monkeypatch.setattr("cogs.osa_musify.now_playing", lambda guild: SimpleNamespace(has_track=True))
+    monkeypatch.setattr("cogs.nya_musify.now_playing", lambda guild: SimpleNamespace(has_track=True))
     monkeypatch.setattr(MusicPlayer, "follow", lambda self, message: None)
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     interaction = _ask()
     interaction.response.is_done.return_value = True
     interaction.edit_original_response = AsyncMock()
@@ -639,14 +639,14 @@ async def case_a_link_while_paused_stays_quiet_and_out(monkeypatch):
 async def test_an_add_after_the_cross_brings_the_card_back(monkeypatch):
     """Closing the card hides the song the bot starts. A song the user adds or starts brings it back."""
     monkeypatch.setattr(
-        "cogs.osa_musify.find_songs",
+        "cogs.nya_musify.find_songs",
         AsyncMock(return_value=Found("https://open.spotify.com/track/abc", "spotify", [_named("Ocean Drive")], True)),
     )
     queued = AsyncMock(return_value="Added Ocean Drive.")
-    monkeypatch.setattr("cogs.osa_musify.queue_tracks", queued)
-    monkeypatch.setattr("cogs.osa_musify.now_playing", lambda guild: SimpleNamespace(has_track=True))
+    monkeypatch.setattr("cogs.nya_musify.queue_tracks", queued)
+    monkeypatch.setattr("cogs.nya_musify.now_playing", lambda guild: SimpleNamespace(has_track=True))
     monkeypatch.setattr(MusicPlayer, "follow", lambda self, message: None)
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     interaction = _ask()
     interaction.response.is_done.return_value = True
     interaction.edit_original_response = AsyncMock()
@@ -676,7 +676,7 @@ async def test_the_play_card_opens(monkeypatch):
     await case_a_sent_card_keeps_its_message()
 
 async def case_opening_search_removes_the_empty_card_and_the_reverse():
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     genre_message = MagicMock()
     genre_message.delete = AsyncMock()
     search_message = MagicMock()
@@ -720,7 +720,7 @@ async def case_opening_search_removes_the_empty_card_and_the_reverse():
     assert listed.is_finished() is True
 
 async def case_the_empty_card_search_opens_the_song_list(monkeypatch):
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     opening = _person(9)
     opening.response.send_message = AsyncMock()
     opening.response.is_done.return_value = False
@@ -732,7 +732,7 @@ async def case_the_empty_card_search_opens_the_song_list(monkeypatch):
     assert isinstance(genre, GenreList)
     heading = genre.children[0].children[0]
     assert isinstance(heading, discord.ui.Section)
-    assert heading.children[0].content == "## Osaka Play"
+    assert heading.children[0].content == "## Nya Play"
     assert heading.accessory.label == MARK_SEARCH
 
     busy = _ask()
@@ -752,7 +752,7 @@ async def case_the_empty_card_search_opens_the_song_list(monkeypatch):
 
     track = _named("One Wish", "Ray J")
     found = AsyncMock(return_value=Found("one wish", "apple", [track], False))
-    monkeypatch.setattr("cogs.osa_musify.find_songs", found)
+    monkeypatch.setattr("cogs.nya_musify.find_songs", found)
     submit = _person(9)
     submit.response.is_done.return_value = True
     submit.original_response = AsyncMock(return_value=message)
@@ -772,7 +772,7 @@ async def case_the_empty_card_search_opens_the_song_list(monkeypatch):
     assert listed.children[0].children[0].accessory.label == MARK_SEARCH
 
 async def case_a_sent_card_keeps_its_message():
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     interaction = _ask()
     interaction.response.send_message = AsyncMock()
     interaction.response.is_done.return_value = False
@@ -806,10 +806,10 @@ async def test_search_again_from_the_playlist(monkeypatch):
 async def case_a_playlist_search_reposts_the_play_card(monkeypatch):
     track = _named("Ocean Drive")
     monkeypatch.setattr(
-        "cogs.osa_musify.find_songs",
+        "cogs.nya_musify.find_songs",
         AsyncMock(return_value=Found("ocean drive", "apple", [track], False)),
     )
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     old = MagicMock()
     old.id = 4
     old.delete = AsyncMock()
@@ -842,13 +842,13 @@ async def case_a_link_from_the_playlist_leaves_that_card(monkeypatch):
     """Searching a link on the playlist card must not delete or replace it."""
     link = _named("Ocean Drive")
     monkeypatch.setattr(
-        "cogs.osa_musify.find_songs",
+        "cogs.nya_musify.find_songs",
         AsyncMock(return_value=Found("https://open.spotify.com/track/abc", "spotify", [link], True)),
     )
     queued = AsyncMock(return_value="Added Ocean Drive.")
-    monkeypatch.setattr("cogs.osa_musify.queue_tracks", queued)
+    monkeypatch.setattr("cogs.nya_musify.queue_tracks", queued)
     monkeypatch.setattr(MusicPlayer, "follow", lambda self, message: None)
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     play_message = MagicMock()
     play_message.id = 4
     play_message.delete = AsyncMock()
@@ -911,8 +911,8 @@ async def case_search_again_keeps_the_platform(monkeypatch):
         calls.append((song, platform, mode))
         return Found(song, platform, [_named("Ocean Drive")], False)
 
-    monkeypatch.setattr("cogs.osa_musify.find_songs", search)
-    cog = OsaMusify(MagicMock())
+    monkeypatch.setattr("cogs.nya_musify.find_songs", search)
+    cog = NyaMusify(MagicMock())
     message = MagicMock()
     message.delete = AsyncMock()
     view = MatchList(
@@ -971,8 +971,8 @@ async def case_a_failed_search_keeps_the_card(monkeypatch):
     async def search(guild, song, platform="youtube", mode=None):
         return "Nothing on YouTube matched that."
 
-    monkeypatch.setattr("cogs.osa_musify.find_songs", search)
-    cog = OsaMusify(MagicMock())
+    monkeypatch.setattr("cogs.nya_musify.find_songs", search)
+    cog = NyaMusify(MagicMock())
     message = MagicMock()
     message.id = 77
     message.delete = AsyncMock()
@@ -1008,8 +1008,8 @@ async def case_a_missed_name_still_opens_the_list(monkeypatch):
     async def search(guild, song, platform="youtube", mode=None):
         return "Nothing on Spotify matched that."
 
-    monkeypatch.setattr("cogs.osa_musify.find_songs", search)
-    cog = OsaMusify(MagicMock())
+    monkeypatch.setattr("cogs.nya_musify.find_songs", search)
+    cog = NyaMusify(MagicMock())
     message = MagicMock()
     message.id = 78
     message.delete = AsyncMock()
@@ -1044,16 +1044,16 @@ async def case_a_missed_name_still_opens_the_list(monkeypatch):
 async def case_a_link_that_does_not_start_keeps_the_card(monkeypatch):
     track = _named("Ocean Drive")
     monkeypatch.setattr(
-        "cogs.osa_musify.find_songs",
+        "cogs.nya_musify.find_songs",
         AsyncMock(return_value=Found(
             "https://www.youtube.com/watch?v=abc", "youtube", [track], True,
         )),
     )
     monkeypatch.setattr(
-        "cogs.osa_musify.queue_tracks",
+        "cogs.nya_musify.queue_tracks",
         AsyncMock(return_value="Join a voice channel first."),
     )
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     message = MagicMock()
     message.delete = AsyncMock()
     view = MatchList(
@@ -1081,8 +1081,8 @@ async def case_a_link_that_does_not_start_keeps_the_card(monkeypatch):
 
 async def case_a_closed_card_does_not_search_again(monkeypatch):
     search = AsyncMock()
-    monkeypatch.setattr("cogs.osa_musify.find_songs", search)
-    cog = OsaMusify(MagicMock())
+    monkeypatch.setattr("cogs.nya_musify.find_songs", search)
+    cog = NyaMusify(MagicMock())
     view = MatchList(
         "one wish",
         "apple",
@@ -1115,7 +1115,7 @@ async def case_search_again_still_switches_platform(monkeypatch):
         title = "Spot" if platform == "spotify" else "Wish"
         return Found(song, platform, [_named(title)], False)
 
-    monkeypatch.setattr("cogs.osa_musify.find_songs", search)
+    monkeypatch.setattr("cogs.nya_musify.find_songs", search)
     monkeypatch.setattr("music.play.search.find_songs", search)
     state = MagicMock()
     store = ViewStore(state)
@@ -1124,7 +1124,7 @@ async def case_search_again_still_switches_platform(monkeypatch):
     message.id = 42
     message.delete = AsyncMock()
     message._state = state
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     try:
         opening = _person(9)
         opening.response.is_done.return_value = True
@@ -1184,7 +1184,7 @@ async def test_the_player_command(monkeypatch):
 
 async def case_two_player_opens_leave_one_card(monkeypatch):
     monkeypatch.setattr(MusicPlayer, "follow", lambda self, message: None)
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     guild = MagicMock()
     guild.id = 31
     _hearing(guild)
@@ -1223,7 +1223,7 @@ async def case_two_player_opens_leave_one_card(monkeypatch):
     cog._panels[0].shutdown()
 
 async def case_a_failed_player_leaves_the_play_card(monkeypatch):
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     press = _person(9)
     press.response.send_message = AsyncMock()
     press.response.is_done.return_value = False
@@ -1243,7 +1243,7 @@ async def case_a_failed_player_leaves_the_play_card(monkeypatch):
 
 async def case_a_failed_player_send_keeps_the_open_one(monkeypatch):
     monkeypatch.setattr(MusicPlayer, "follow", lambda self, message: None)
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     guild = MagicMock()
     guild.id = 31
     _hearing(guild)
@@ -1276,7 +1276,7 @@ async def test_the_cross_keeps_the_next_song_from_posting_the_player(monkeypatch
     """Someone closes the card. The bot's next song stays quiet. Starting one brings the card back."""
     monkeypatch.setattr("music.player.sync.asyncio.sleep", _hold)
     guild, player, track = await _playing()
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     try:
         await _summon_player(cog, guild, player)
         await cog._panels[0].dismiss()
@@ -1335,7 +1335,7 @@ async def test_the_cross_keeps_the_next_song_from_posting_the_player(monkeypatch
 async def case_the_player_command_stays_down_when_the_song_is_over():
     """The song finished and nothing is lined up. The player command says so and posts no card."""
     guild, player, _track = await _playing()
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     try:
         await _song_ends(guild, player)
         press = _ask()
@@ -1362,7 +1362,7 @@ async def test_one_playlist_card(monkeypatch, tmp_path):
         await case_playlist_shows_the_line(patch, spot)
 
 async def case_one_public_playlist_card_per_server():
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     first_message = MagicMock()
     first_message.id = 1
     first_message.delete = AsyncMock()
@@ -1430,7 +1430,7 @@ async def case_one_public_playlist_card_per_server():
 
 
 async def case_a_failed_playlist_send_keeps_the_open_one():
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     first_message = MagicMock()
     first_message.id = 1
     first_message.delete = AsyncMock()
@@ -1455,7 +1455,7 @@ async def case_a_failed_playlist_send_keeps_the_open_one():
     opened.stop()
 
 async def case_the_next_playlist_removes_a_card_that_could_not_close():
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     first_message = MagicMock()
     first_message.id = 1
     first_message.delete = AsyncMock()
@@ -1486,7 +1486,7 @@ async def case_the_next_playlist_removes_a_card_that_could_not_close():
     again.stop()
 
 async def case_a_second_playlist_command_is_acknowledged_while_the_first_finishes():
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     first = _ask()
     first.guild.id = 31
     gate = asyncio.Event()
@@ -1525,9 +1525,9 @@ async def case_a_second_playlist_command_is_acknowledged_while_the_first_finishe
     shown.stop()
 
 async def case_playlist_shows_the_line(monkeypatch, tmp_path):
-    assert OsaMusify(MagicMock()).guild_config is guild_config
+    assert NyaMusify(MagicMock()).guild_config is guild_config
     store = GuildConfig(tmp_path / "guild.json")
-    cog = OsaMusify(MagicMock(), guild_config=store)
+    cog = NyaMusify(MagicMock(), guild_config=store)
     monkeypatch.setattr(MusicPlayer, "follow", lambda self, message: None)
 
     interaction = _ask()
@@ -1559,12 +1559,12 @@ async def case_playlist_shows_the_line(monkeypatch, tmp_path):
 
 async def test_a_pasted_playlist_asks_to_keep_every_song(monkeypatch):
     """A playlist or album link keeps the overflow. A single track link does not."""
-    cog = OsaMusify(MagicMock())
+    cog = NyaMusify(MagicMock())
     monkeypatch.setattr(MusicPlayer, "follow", lambda self, message: None)
     search = AsyncMock()
-    monkeypatch.setattr("cogs.osa_musify.find_songs", search)
+    monkeypatch.setattr("cogs.nya_musify.find_songs", search)
     queued = AsyncMock(return_value="Playing One.")
-    monkeypatch.setattr("cogs.osa_musify.queue_tracks", queued)
+    monkeypatch.setattr("cogs.nya_musify.queue_tracks", queued)
 
     async def play(url, tracks):
         search.return_value = Found(url, "spotify", tracks, True)

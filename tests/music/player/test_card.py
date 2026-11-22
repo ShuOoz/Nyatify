@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 
 from announce import ACCENT_COLOR
-from cogs.osa_musify import OsaMusify
+from cogs.nya_musify import NyaMusify
 from music.panel import (
     MARK_BACK,
     MARK_CLOSE,
@@ -626,7 +626,7 @@ async def case_an_open_player_refreshes_when_the_line_changes():
     guild, player, _track = await _playing()
     panel = None
     try:
-        cog = OsaMusify(MagicMock())
+        cog = NyaMusify(MagicMock())
         panel = MusicPlayer(guild, discard=cog._forget_panel)
         cog._panels.append(panel)
         message = MagicMock()

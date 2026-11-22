@@ -25,7 +25,7 @@ _NOT_FEATURE_OWNERS = frozenset({"admin"})
 COG_PUBLIC_NAMES = {
     "voice_notify": "voice",
     "news_notify": "news",
-    "osa_musify": "music",
+    "nya_musify": "music",
 }
 _STEM_FROM_PUBLIC = {public: stem for stem, public in COG_PUBLIC_NAMES.items()}
 
